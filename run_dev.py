@@ -45,10 +45,19 @@ def main() -> int:
     cust = store.customer_for_email(a.email)
     tok = store.create_login_token(a.email, cust["customer_id"], 120)
     print(f"\nSign in: http://localhost:{a.port}/login/{tok}")
-    if not store.invite("demo-invite"):
+    # ingest_invites is a full snapshot, so only seed the demo link when the feeds
+    # brought none (otherwise it would revoke every real invite just ingested).
+    import sqlalchemy as sa
+    from store.db import invites as invites_t
+    with store.engine.connect() as conn:
+        active = [r[0] for r in conn.execute(sa.select(invites_t.c.token).where(invites_t.c.active.is_(True)))]
+    if not active:
         store.ingest_invites([{"token": "demo-invite", "label": "Demo Off-Price Buyer", "email": a.email, "companies": []}],
                              as_of=None, generated_at=None)
-    print(f"Invite link: http://localhost:{a.port}/i/demo-invite\n")
+        active = ["demo-invite"]
+    for tok in active:
+        print(f"Invite link: http://localhost:{a.port}/i/{tok}")
+    print()
     app.run(port=a.port, debug=False)
     return 0
 
