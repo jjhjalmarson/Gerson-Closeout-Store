@@ -20,7 +20,15 @@ services:
       - key: BASE_URL
         sync: false
       - key: MAIL_BACKEND
-        value: log
+        value: graph
+      - key: GRAPH_TENANT_ID
+        sync: false
+      - key: GRAPH_CLIENT_ID
+        sync: false
+      - key: GRAPH_CLIENT_SECRET
+        sync: false
+      - key: GRAPH_SENDER_MAILBOX
+        sync: false
 
 databases:
   - name: gerson-closeout-db

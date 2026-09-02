@@ -26,6 +26,10 @@ class Config:
     smtp_password: str
     mail_from: str
     login_token_minutes: int
+    graph_tenant_id: str = ""
+    graph_client_id: str = ""
+    graph_client_secret: str = ""
+    graph_sender_mailbox: str = ""
 
     @property
     def testing_defaults(self) -> bool:
@@ -50,4 +54,8 @@ def load_config() -> Config:
         smtp_password=_env("SMTP_PASSWORD"),
         mail_from=_env("MAIL_FROM", "closeouts@gersoncompany.com"),
         login_token_minutes=int(_env("LOGIN_TOKEN_MINUTES", "30") or 30),
+        graph_tenant_id=_env("GRAPH_TENANT_ID"),
+        graph_client_id=_env("GRAPH_CLIENT_ID"),
+        graph_client_secret=_env("GRAPH_CLIENT_SECRET"),
+        graph_sender_mailbox=_env("GRAPH_SENDER_MAILBOX"),
     )

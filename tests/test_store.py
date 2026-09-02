@@ -15,7 +15,8 @@ KEY = "store-key-123"
 def _cfg() -> Config:
     return Config(secret_key="test-secret", store_ingest_key=KEY, database_url="sqlite://", base_url="http://store.test",
                   mail_backend="log", smtp_host="", smtp_port=587, smtp_user="", smtp_password="",
-                  mail_from="x@y", login_token_minutes=30)
+                  mail_from="x@y", login_token_minutes=30, graph_tenant_id="", graph_client_id="",
+                  graph_client_secret="", graph_sender_mailbox="")
 
 
 CATALOG = {"kind": "catalog", "version": 1, "as_of": "2026-09-01", "generated_at": "2026-09-01T07:30:00+00:00", "count": 2, "items": [
