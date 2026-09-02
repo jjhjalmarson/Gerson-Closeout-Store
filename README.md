@@ -25,6 +25,16 @@ the same key. See `docs/closeout-platform-brief.md` §0 / §11 in the AOI repo.
 The catalog feed still carries the ladder price for AOI's own use; **the sheet
 never shows it** — buyers see original wholesale and type what they will pay.
 
+## Who gets in
+
+Buyers are approved **on the store**, by a person, and are never tied to a
+NetSuite customer record (JJ, 2026-09-02). An admin (an address in
+`STORE_ADMIN_EMAILS`, signed in at `/admin` with the same one-time email link)
+invites a buyer by email; the buyer signs up at `/join/<token>` (or requests
+access at `/apply`); the admin approves, which emails a sign-in link. Approved
+buyers see every company's SKUs. AOI's older paths — the customers allowlist
+and `/i/<token>` invite links — still work for anything already set up.
+
 ## How a buyer uses it
 
 1. Opens `/i/<token>` (created and revoked in AOI's Closeout tab). Allowlisted

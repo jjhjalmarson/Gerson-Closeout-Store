@@ -17,7 +17,7 @@ def _cfg(**over) -> Config:
                 mail_backend="log", smtp_host="", smtp_port=587, smtp_user="", smtp_password="",
                 mail_from="x@y", login_token_minutes=30, graph_tenant_id="", graph_client_id="",
                 graph_client_secret="", graph_sender_mailbox="", offer_notify_emails="offers@gerson.test; jj@gerson.test",
-                website_url="https://shop.gerson.test")
+                website_url="https://shop.gerson.test", admin_emails="Admin@Gerson.test; boss@gerson.test")
     base.update(over)
     return Config(**base)
 
@@ -151,6 +151,7 @@ class AccessTest(StoreTestCase):
         self.assertEqual(self.client.post("/offer/set", data={}).status_code, 302)
         html = self.client.get("/login").get_data(as_text=True)
         self.assertIn("by invitation", html)
+        self.assertIn("Request access", html)
         self.assertIn("https://shop.gerson.test", html)          # independents are pointed at the website
 
     def test_invite_link_opens_the_sheet(self):
@@ -474,6 +475,101 @@ class NegotiationRoundTest(StoreTestCase):
         self.store.respond_round("tok-4", {"x": 1}) if False else None
         self.push(token="tok-3", round_id=8, round_no=3, kind="accept", thread_status="accepted")
         self.assertEqual(self.store.round("tok-3")["status"], "closed")
+
+
+class SignupAdminTest(StoreTestCase):
+    def setUp(self):
+        super().setUp()
+        self.ingest("catalog", CATALOG)
+
+    def _link(self, body, marker):
+        import re as _re
+        m = _re.search(r"http://store\.test(/[^\s]+)", body)
+        self.assertIsNotNone(m, body)
+        self.assertIn(marker, m.group(1))
+        return m.group(1)
+
+    def admin_login(self, email="admin@gerson.test"):
+        self.client.post("/login", data={"email": email})
+        return self.client.get(self._link(self.sent[-1]["body"], "/login/"))
+
+    def test_admin_signs_in_by_link_and_portal_is_hidden_from_others(self):
+        self.assertEqual(self.client.get("/admin/").status_code, 404)
+        r = self.admin_login("ADMIN@gerson.test")
+        self.assertEqual((r.status_code, r.headers["Location"].endswith("/admin/")), (302, True))
+        html = self.client.get("/admin/").get_data(as_text=True)
+        self.assertIn("Buyer admin", html); self.assertIn("admin@gerson.test", html); self.assertIn("Invite a buyer", html)
+        self.client.post("/logout")
+        self.assertEqual(self.client.get("/admin/").status_code, 404)
+        self.client.post("/login", data={"email": "nobody@nowhere.test"})       # unknown: no link, same page
+        self.assertEqual([m["to"] for m in self.sent], ["admin@gerson.test"])
+
+    def test_invite_signup_approve_signin_offer_suspend(self):
+        self.admin_login()
+        r = self.client.post("/admin/invite", data={"email": "Pat@TJX.test", "company": "TJX", "note": "Looking forward to it."}, follow_redirects=True)
+        self.assertIn("Invitation sent to pat@tjx.test", r.get_data(as_text=True))
+        inv_mail = self.sent[-1]
+        self.assertEqual(inv_mail["to"], "pat@tjx.test"); self.assertIn("Looking forward", inv_mail["body"])
+        join = self._link(inv_mail["body"], "/join/")
+        html = self.client.get(join).get_data(as_text=True)
+        self.assertIn('value="pat@tjx.test"', html); self.assertIn('value="TJX"', html)
+        self.assertEqual(self.client.post(join, data={"company": "TJX", "contact": ""}).status_code, 400)
+        n = len(self.sent)
+        r = self.client.post(join, data={"company": "TJX Companies", "contact": "Pat Buyer", "phone": "555", "notes": "HomeGoods, Marshalls"})
+        self.assertEqual(r.status_code, 200); self.assertIn("Thank you", r.get_data(as_text=True))
+        tos = [m["to"] for m in self.sent[n:]]
+        self.assertEqual(sorted(tos), ["admin@gerson.test", "boss@gerson.test", "pat@tjx.test"])   # admins told, buyer acknowledged
+        self.assertIn("/admin", next(m for m in self.sent[n:] if m["to"] == "boss@gerson.test")["body"])
+        self.assertEqual(self.client.get(join).status_code, 404)                              # one sign-up per invitation
+        # pending buyer cannot sign in yet
+        n = len(self.sent)
+        self.client.post("/login", data={"email": "pat@tjx.test"})
+        self.assertEqual(len(self.sent), n)
+        # admin approves -> sign-in link
+        b = self.store.buyer_for_email("pat@tjx.test")
+        self.assertEqual((b["status"], b["company"], b["contact"], b["invite_token"] is not None), ("pending", "TJX Companies", "Pat Buyer", True))
+        html = self.client.get("/admin/").get_data(as_text=True)
+        self.assertIn("Waiting for approval", html); self.assertIn("TJX Companies", html)
+        r = self.client.post(f"/admin/buyers/{b['id']}/status", data={"status": "approved"}, follow_redirects=True)
+        self.assertIn("approved; sign-in link sent", r.get_data(as_text=True))
+        self.assertEqual(self.store.buyer(b["id"])["approved_by"], "admin@gerson.test")
+        signin = self._link(self.sent[-1]["body"], "/login/")
+        # the buyer signs in on another client and sees every company's SKUs
+        buyer = self.app.test_client()
+        r = buyer.get(signin)
+        self.assertEqual(r.status_code, 302)
+        html = buyer.get("/").get_data(as_text=True)
+        self.assertIn("TJX Companies", html); self.assertIn("Lantern", html); self.assertIn("Tree", html); self.assertIn("Sign out", html)
+        buyer.post("/offer/line", json={"sku": "L1", "qty": 24, "price": 10})
+        html = buyer.get("/offer").get_data(as_text=True)
+        self.assertIn('value="TJX Companies"', html); self.assertIn('value="pat@tjx.test"', html); self.assertIn('value="Pat Buyer"', html)
+        buyer.post("/offer/submit", data={"company": "TJX Companies", "contact": "Pat Buyer", "email": "pat@tjx.test"})
+        it = [i for i in self.store.pull_outbox() if i["kind"] == "offer"][0]
+        self.assertEqual((it["customer_id"], it["payload"]["buyer"]["kind"], it["payload"]["buyer"]["key"]), (None, "buyer", f"buyer:{b['id']}"))
+        # a fresh link by email works for an approved buyer; suspension ends access at once
+        n = len(self.sent)
+        buyer.post("/login", data={"email": "pat@tjx.test"})
+        self.assertEqual(self.sent[-1]["to"], "pat@tjx.test"); self.assertEqual(len(self.sent), n + 1)
+        self.client.post(f"/admin/buyers/{b['id']}/status", data={"status": "suspended"})
+        self.assertEqual(buyer.get("/").status_code, 302)
+        html = self.client.get("/admin/").get_data(as_text=True)
+        self.assertIn("Reactivate", html); self.assertIn(">1<", html)                        # offers count
+        # declined sign-ups can apply again; withdrawn invitations die
+        self.client.post(f"/admin/buyers/{b['id']}/status", data={"status": "declined"})
+        self.store.create_buyer(company="TJX", contact="Pat", email="pat@tjx.test")
+        self.assertEqual(self.store.buyer(b["id"])["status"], "pending")
+        inv2 = self.store.create_signup_invite("x@y.test", created_by="admin@gerson.test")
+        self.client.post(f"/admin/invites/{inv2['token']}/revoke")
+        self.assertEqual(self.client.get(f"/join/{inv2['token']}").status_code, 404)
+
+    def test_open_application_becomes_a_pending_buyer(self):
+        r = self.client.post("/apply", data={"company": "New Shop", "contact": "Owner", "email": "owner@newshop.com", "resale_number": "TX-1", "city": "Austin", "state": "TX"})
+        self.assertEqual(r.status_code, 200)
+        b = self.store.buyer_for_email("owner@newshop.com")
+        self.assertEqual((b["status"], b["company"], b["contact"]), ("pending", "New Shop", "Owner"))
+        self.assertIn("resale TX-1", b["notes"]); self.assertIn("Austin, TX", b["notes"])
+        self.assertEqual([i["kind"] for i in self.store.pull_outbox()], ["application"])   # AOI still sees it
+        self.assertEqual(sorted(m["to"] for m in self.sent), ["admin@gerson.test", "boss@gerson.test", "owner@newshop.com"])
 
 
 class OutboxProtocolTest(StoreTestCase):

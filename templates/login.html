@@ -7,12 +7,13 @@
     <p>If <b>{{ email }}</b> is on file for an approved account, a sign-in link is on its way. It works once and expires shortly.</p>
     <p class="muted">Nothing arrived? Check spam, or contact your Gerson representative.</p>
   {% else %}
-    <p>This sheet is <b>by invitation</b>. If Gerson sent you a link, open it — it signs you in on its own.</p>
-    <p class="muted">Approved wholesale accounts can also sign in with the email on file:</p>
+    <p>This sheet is <b>by invitation</b>. If Gerson invited you, use the sign-up link in that email; once you are approved you sign in here.</p>
+    <p class="muted">Approved buyers: enter your email for a one-time sign-in link.</p>
     <form method="post">
       <label>Email<br><input type="email" name="email" required style="width:100%"></label>
-      <div style="margin-top:.8rem"><button type="submit" class="sec">Email me a sign-in link</button></div>
+      <div style="margin-top:.8rem"><button type="submit">Email me a sign-in link</button></div>
     </form>
+    <p class="muted" style="margin-top:1rem">Not invited yet? <a href="{{ url_for('shop.apply') }}">Request access</a>.</p>
   {% endif %}
   {% if website_url %}<p class="muted" style="margin-top:1.4rem">Looking to shop closeouts at the posted price? They are on our website: <a href="{{ website_url }}">{{ website_url }}</a>.</p>{% endif %}
 </div>

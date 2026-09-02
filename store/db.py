@@ -74,9 +74,41 @@ login_tokens = sa.Table(
     "login_tokens", metadata,
     sa.Column("token", sa.String(64), primary_key=True),
     sa.Column("email", sa.String(200), nullable=False),
-    sa.Column("customer_id", sa.String(32), nullable=False),
+    sa.Column("customer_id", sa.String(32), nullable=False, default=""),   # legacy: AOI-fed account id
+    sa.Column("subject", sa.String(200)),                                   # cust:<id> | buyer:<id> | admin:<email>
     sa.Column("expires_at", sa.String(32), nullable=False),
     sa.Column("used_at", sa.String(32)),
+)
+
+# Buyers who signed up on the store (JJ, 2026-09-02): approved by an admin here,
+# never tied to a NetSuite customer, every company's SKUs visible.
+buyers = sa.Table(
+    "buyers", metadata,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("company", sa.String(200), nullable=False),
+    sa.Column("contact", sa.String(200), default=""),
+    sa.Column("email", sa.String(200), nullable=False, unique=True),
+    sa.Column("phone", sa.String(60), default=""),
+    sa.Column("notes", sa.Text, default=""),
+    sa.Column("status", sa.String(20), nullable=False, default="pending"),   # pending | approved | suspended | declined
+    sa.Column("invite_token", sa.String(64)),
+    sa.Column("created_at", sa.String(32), nullable=False),
+    sa.Column("approved_at", sa.String(32)),
+    sa.Column("approved_by", sa.String(200)),
+    sa.Column("updated_at", sa.String(32), nullable=False),
+)
+
+signup_invites = sa.Table(
+    "signup_invites", metadata,
+    sa.Column("token", sa.String(64), primary_key=True),
+    sa.Column("email", sa.String(200), nullable=False),
+    sa.Column("company", sa.String(200), default=""),
+    sa.Column("note", sa.Text, default=""),
+    sa.Column("created_by", sa.String(200), default=""),
+    sa.Column("created_at", sa.String(32), nullable=False),
+    sa.Column("used_at", sa.String(32)),
+    sa.Column("buyer_id", sa.Integer),
+    sa.Column("revoked_at", sa.String(32)),
 )
 
 # Invite links (leadership, 2026-09-02): the offer sheet is invitation-only.
@@ -335,23 +367,112 @@ class Store:
             row = conn.execute(sa.select(customers).where(customers.c.customer_id == str(customer_id))).mappings().first()
         return _cust(row) if row and row["active"] else None
 
-    def create_login_token(self, email: str, customer_id: str, minutes: int) -> str:
+    def create_login_token(self, email: str, customer_id: str, minutes: int, *, subject: str | None = None) -> str:
+        """One-time sign-in link. ``subject`` says who it signs in: ``cust:<id>``
+        (AOI-fed account, the default when a customer id is given), ``buyer:<id>``
+        (signed up here) or ``admin:<email>``."""
         token = secrets.token_urlsafe(32)
         exp = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        subj = subject or (f"cust:{customer_id}" if str(customer_id or "").strip() else "")
         with self.engine.begin() as conn:
             conn.execute(login_tokens.insert().values(token=token, email=email.strip().lower(),
-                                                      customer_id=str(customer_id), expires_at=exp))
+                                                      customer_id=str(customer_id or ""), subject=subj, expires_at=exp))
         return token
 
     def redeem_login_token(self, token: str) -> dict[str, Any] | None:
-        """Single use, unexpired. Returns the customer row or None."""
+        """Single use, unexpired. Returns ``{subject, email}`` or None."""
         now = now_iso()
         with self.engine.begin() as conn:
             row = conn.execute(sa.select(login_tokens).where(login_tokens.c.token == token)).mappings().first()
             if not row or row["used_at"] or row["expires_at"] < now:
                 return None
             conn.execute(sa.update(login_tokens).where(login_tokens.c.token == token).values(used_at=now))
-        return self.customer(row["customer_id"])
+        subject = row["subject"] or (f"cust:{row['customer_id']}" if row["customer_id"] else "")
+        return {"subject": subject, "email": row["email"]} if subject else None
+
+    # --- buyers who signed up here + their invitations ----------------------
+
+    def create_signup_invite(self, email: str, *, company: str = "", note: str = "", created_by: str = "") -> dict[str, Any]:
+        token = secrets.token_urlsafe(24)
+        with self.engine.begin() as conn:
+            conn.execute(signup_invites.insert().values(token=token, email=email.strip().lower(), company=company or "",
+                                                        note=note or "", created_by=created_by or "", created_at=now_iso()))
+        return self.signup_invite(token, any_state=True)
+
+    def signup_invite(self, token: str, *, any_state: bool = False) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            r = conn.execute(sa.select(signup_invites).where(signup_invites.c.token == str(token or ""))).mappings().first()
+        if not r or (not any_state and (r["used_at"] or r["revoked_at"])):
+            return None
+        return dict(r)
+
+    def list_signup_invites(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rs = conn.execute(sa.select(signup_invites).order_by(signup_invites.c.created_at.desc()).limit(limit)).mappings().all()
+        return [dict(r) for r in rs]
+
+    def revoke_signup_invite(self, token: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(signup_invites).where(signup_invites.c.token == str(token), signup_invites.c.used_at.is_(None))
+                         .values(revoked_at=now_iso()))
+
+    def create_buyer(self, *, company: str, contact: str, email: str, phone: str = "", notes: str = "",
+                     invite_token: str | None = None) -> dict[str, Any]:
+        """A sign-up. An email already on file keeps its record (and its status
+        unless it was declined, which becomes pending again)."""
+        now = now_iso()
+        e = email.strip().lower()
+        with self.engine.begin() as conn:
+            existing = conn.execute(sa.select(buyers).where(buyers.c.email == e)).mappings().first()
+            if existing:
+                vals = {"company": company.strip() or existing["company"], "contact": contact.strip() or existing["contact"],
+                        "phone": phone.strip() or existing["phone"], "notes": notes.strip() or existing["notes"], "updated_at": now}
+                if existing["status"] == "declined":
+                    vals["status"] = "pending"
+                if invite_token:
+                    vals["invite_token"] = invite_token
+                conn.execute(sa.update(buyers).where(buyers.c.id == existing["id"]).values(**vals))
+                bid = int(existing["id"])
+            else:
+                res = conn.execute(buyers.insert().values(company=company.strip(), contact=contact.strip(), email=e, phone=phone.strip(),
+                                                          notes=notes.strip(), status="pending", invite_token=invite_token,
+                                                          created_at=now, updated_at=now))
+                bid = int(res.inserted_primary_key[0])
+            if invite_token:
+                conn.execute(sa.update(signup_invites).where(signup_invites.c.token == invite_token, signup_invites.c.used_at.is_(None))
+                             .values(used_at=now, buyer_id=bid))
+        return self.buyer(bid)
+
+    def buyer(self, buyer_id: int) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            r = conn.execute(sa.select(buyers).where(buyers.c.id == int(buyer_id))).mappings().first()
+        return dict(r) if r else None
+
+    def buyer_for_email(self, email: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            r = conn.execute(sa.select(buyers).where(buyers.c.email == (email or "").strip().lower())).mappings().first()
+        return dict(r) if r else None
+
+    def list_buyers(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        stmt = sa.select(buyers).order_by(buyers.c.company, buyers.c.id)
+        if status:
+            stmt = stmt.where(buyers.c.status == status)
+        with self.engine.connect() as conn:
+            return [dict(r) for r in conn.execute(stmt).mappings().all()]
+
+    def set_buyer_status(self, buyer_id: int, status: str, *, by: str = "") -> None:
+        now = now_iso()
+        vals: dict[str, Any] = {"status": status, "updated_at": now}
+        if status == "approved":
+            vals.update(approved_at=now, approved_by=by)
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id)).values(**vals))
+
+    def buyer_offer_counts(self) -> dict[str, int]:
+        with self.engine.connect() as conn:
+            rs = conn.execute(sa.select(outbox.c.buyer_key, sa.func.count()).where(outbox.c.kind == "offer")
+                              .group_by(outbox.c.buyer_key)).all()
+        return {str(k): int(n) for k, n in rs if k}
 
     # --- catalog ------------------------------------------------------------
 
@@ -668,7 +789,8 @@ def _ensure_columns(eng: Engine) -> None:
     wanted = {"products": {"master_pack": "INTEGER NOT NULL DEFAULT 0", "inner_pack": "INTEGER NOT NULL DEFAULT 0",
                            "company": "VARCHAR(20) NOT NULL DEFAULT ''"},
               "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'"},
-              "outbox": {"buyer_key": "VARCHAR(96)"}}
+              "outbox": {"buyer_key": "VARCHAR(96)"},
+              "login_tokens": {"subject": "VARCHAR(200)"}}
     with eng.begin() as conn:
         for table, cols in wanted.items():
             have = {c["name"] for c in insp.get_columns(table)}

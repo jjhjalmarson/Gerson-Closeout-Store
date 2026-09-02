@@ -33,6 +33,8 @@ services:
         sync: false
       - key: WEBSITE_URL
         sync: false
+      - key: STORE_ADMIN_EMAILS
+        sync: false
 
 databases:
   - name: gerson-closeout-db

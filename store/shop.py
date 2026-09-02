@@ -18,12 +18,13 @@ import csv
 import functools
 import io
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, render_template, request, session,
                    url_for)
 
 from . import mail
+from .db import ALL_COMPANIES
 
 bp = Blueprint("shop", __name__)
 PAGE_SIZE = 60
@@ -37,8 +38,16 @@ def _ctx():
 
 
 def _resolve_buyer() -> dict[str, Any] | None:
-    """Who is looking: an invite-link holder or a signed-in allowlisted account."""
+    """Who is looking: a buyer approved on the store, an invite-link holder, or a
+    signed-in AOI-fed account.  Approved buyers see every company's SKUs."""
     store = _ctx().store
+    bid = session.get("buyer_id")
+    if bid:
+        b = store.buyer(int(bid))
+        if b and b["status"] == "approved":
+            return {"kind": "buyer", "key": f"buyer:{b['id']}", "token": "", "name": b["company"], "contact": b.get("contact") or "",
+                    "email": b["email"], "companies": list(ALL_COMPANIES), "customer_id": None, "rep_name": "", "buyer_id": b["id"]}
+        return None
     tok = session.get("invite")
     if tok:
         inv = store.invite(tok)
@@ -92,32 +101,104 @@ def login():
     return render_template("login.html", website_url=_ctx().cfg.website_url)
 
 
+def _login_subject(ctx, email: str) -> str:
+    """Who a sign-in link for this email signs in, or '' when nobody may."""
+    if email in ctx.cfg.admin_list:
+        return f"admin:{email}"
+    b = ctx.store.buyer_for_email(email)
+    if b and b["status"] == "approved":
+        return f"buyer:{b['id']}"
+    cust = ctx.store.customer_for_email(email)
+    if cust:
+        return f"cust:{cust['customer_id']}"
+    return ""
+
+
 @bp.post("/login")
 def login_post():
     email = (request.form.get("email") or "").strip().lower()
     ctx = _ctx()
     if _EMAIL.match(email):
-        cust = ctx.store.customer_for_email(email)
-        if cust:
-            token = ctx.store.create_login_token(email, cust["customer_id"], ctx.cfg.login_token_minutes)
+        subject = _login_subject(ctx, email)
+        if subject:
+            token = ctx.store.create_login_token(email, "", ctx.cfg.login_token_minutes, subject=subject)
             link = f"{ctx.cfg.base_url}{url_for('shop.login_token', token=token)}"
             mail.send(ctx.cfg, to=email, subject="Your Gerson Closeouts sign-in link",
                       body=f"Sign in to the Gerson closeout offer sheet:\n\n{link}\n\nThis link works once and expires in "
                            f"{ctx.cfg.login_token_minutes} minutes. If you did not request it, ignore this email.")
-    # Same response whether or not the email is on the allowlist: no enumeration.
+    # Same response whether or not the email may sign in: no enumeration.
     return render_template("login.html", sent=True, email=email, website_url=ctx.cfg.website_url)
 
 
 @bp.get("/login/<token>")
 def login_token(token: str):
-    cust = _ctx().store.redeem_login_token(token)
-    if not cust:
+    ctx = _ctx()
+    got = ctx.store.redeem_login_token(token)
+    if not got:
         flash("That sign-in link has expired or was already used. Request a new one.")
         return redirect(url_for("shop.login"))
+    kind, _, ident = got["subject"].partition(":")
     session.clear()
-    session["customer_id"] = cust["customer_id"]
     session.permanent = True
+    if kind == "admin" and ident in ctx.cfg.admin_list:
+        session["admin_email"] = ident
+        return redirect(url_for("admin.home"))
+    if kind == "buyer":
+        b = ctx.store.buyer(int(ident))
+        if not b or b["status"] != "approved":
+            flash("This account is not active. Contact your Gerson representative.")
+            return redirect(url_for("shop.login"))
+        session["buyer_id"] = b["id"]
+    elif kind == "cust":
+        session["customer_id"] = ident
+    else:
+        return redirect(url_for("shop.login"))
     return redirect(url_for("shop.home"))
+
+
+# --- sign-up (from an admin's invitation, or the open application form) ---------
+
+def _notify_admins_signup(ctx, b: Mapping[str, Any]) -> None:
+    for to in ctx.cfg.admin_list:
+        mail.send(ctx.cfg, to=to, subject=f"Closeout sheet sign-up to approve: {b['company']}",
+                  body=(f"{b['company']} / {b['contact']} <{b['email']}>{(' · ' + b['phone']) if b.get('phone') else ''}\n"
+                        + (f"Notes: {b['notes']}\n" if b.get("notes") else "")
+                        + f"\nApprove or decline: {ctx.cfg.base_url}{url_for('admin.home')}\n"))
+
+
+def _signup(ctx, form, invite: Mapping[str, Any] | None):
+    payload = {k: (form.get(k) or "").strip() for k in ("company", "contact", "email", "phone", "notes")}
+    if invite:
+        payload["email"] = invite["email"]          # the invitation fixes the address
+    if not payload["company"] or not payload["contact"] or not _EMAIL.match(payload["email"]):
+        return None, payload
+    b = ctx.store.create_buyer(company=payload["company"], contact=payload["contact"], email=payload["email"],
+                               phone=payload["phone"], notes=payload["notes"], invite_token=(invite or {}).get("token"))
+    _notify_admins_signup(ctx, b)
+    mail.send(ctx.cfg, to=b["email"], subject="Received: your request for the Gerson closeout offer sheet",
+              body=f"Thank you. The Gerson team reviews requests by hand; you will get a sign-in link by email once {b['company']} is approved.\n")
+    return b, payload
+
+
+@bp.get("/join/<token>")
+def join(token: str):
+    inv = _ctx().store.signup_invite(token)
+    if not inv:
+        return render_template("join.html", invalid=True), 404
+    return render_template("join.html", form={"email": inv["email"], "company": inv["company"]}, lock_email=True)
+
+
+@bp.post("/join/<token>")
+def join_post(token: str):
+    ctx = _ctx()
+    inv = ctx.store.signup_invite(token)
+    if not inv:
+        return render_template("join.html", invalid=True), 404
+    b, form = _signup(ctx, request.form, inv)
+    if not b:
+        flash("Company, your name and a valid email are required.")
+        return render_template("join.html", form=form, lock_email=True), 400
+    return render_template("join.html", submitted=True, email=b["email"])
 
 
 @bp.post("/logout")
@@ -133,14 +214,21 @@ def apply():
 
 @bp.post("/apply")
 def apply_post():
+    """Open application (no invitation): becomes a pending buyer for the admin
+    portal, and is still recorded in the outbox so AOI sees it."""
+    ctx = _ctx()
     f = request.form
     payload = {k: (f.get(k) or "").strip() for k in ("company", "contact", "email", "phone", "resale_number", "website",
                                                      "address", "city", "state", "zip", "notes")}
     if not payload["company"] or not _EMAIL.match(payload["email"]):
         flash("Company name and a valid email are required.")
-        return render_template("apply.html", form=payload, website_url=_ctx().cfg.website_url), 400
-    _ctx().store.enqueue("application", payload)
-    return render_template("apply.html", submitted=True, website_url=_ctx().cfg.website_url)
+        return render_template("apply.html", form=payload, website_url=ctx.cfg.website_url), 400
+    notes = " · ".join(x for x in (payload["notes"], payload["resale_number"] and f"resale {payload['resale_number']}",
+                                   payload["website"], ", ".join(x for x in (payload["address"], payload["city"], payload["state"], payload["zip"]) if x)) if x)
+    _signup(ctx, {"company": payload["company"], "contact": payload["contact"] or payload["company"], "email": payload["email"],
+                  "phone": payload["phone"], "notes": notes}, None)
+    ctx.store.enqueue("application", payload)
+    return render_template("apply.html", submitted=True, website_url=ctx.cfg.website_url)
 
 
 # --- the sheet ------------------------------------------------------------------

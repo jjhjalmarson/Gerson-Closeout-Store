@@ -18,6 +18,7 @@ os.environ.setdefault("SECRET_KEY", "dev-only")
 os.environ.setdefault("STORE_INGEST_KEY", "dev-key")
 os.environ.setdefault("DATABASE_URL", "sqlite:///dev-store.db")
 os.environ.setdefault("MAIL_BACKEND", "log")
+os.environ.setdefault("STORE_ADMIN_EMAILS", "admin@example.com")
 
 from app import create_app  # noqa: E402
 
@@ -57,7 +58,8 @@ def main() -> int:
         active = ["demo-invite"]
     for tok in active:
         print(f"Invite link: http://localhost:{a.port}/i/{tok}")
-    print()
+    adm = store.create_login_token("admin@example.com", "", 120, subject="admin:admin@example.com")
+    print(f"Admin portal: http://localhost:{a.port}/login/{adm}\n")
     app.run(port=a.port, debug=False)
     return 0
 
