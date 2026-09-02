@@ -230,7 +230,7 @@ def checkout():
         "buyer_class": g.customer["buyer_class"],
         "po_number": (request.form.get("po_number") or "").strip()[:40],
         "notes": (request.form.get("notes") or "").strip()[:1000],
-        "requested_ship_date": (request.form.get("ship_date") or "").strip()[:10],
+        "requested_ship_date": "",        # closeouts ship at once; the form no longer asks
         "lines": [{"sku": l["sku"], "qty": l["qty"], "unit_price": l["unit_price"]} for l in lines],
         "total": total,
     }

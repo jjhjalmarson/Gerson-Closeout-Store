@@ -23,7 +23,6 @@
 <h2>Place order</h2>
 <form method="post" action="{{ url_for('shop.checkout') }}" class="bar">
   <label>Your PO number <input name="po_number" maxlength="40"></label>
-  <label>Requested ship date <input type="date" name="ship_date"></label>
   <label style="flex:1 1 100%">Notes <input name="notes" maxlength="1000" style="width:100%"></label>
   <button type="submit">Submit order</button>
   <span class="muted">Your rep is credited and will confirm availability. Prices are locked at the time you submit.</span>
