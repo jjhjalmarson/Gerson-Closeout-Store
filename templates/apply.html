@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Apply · Gerson Closeouts{% endblock %}
+{% block body %}
+<div class="login" style="max-width:640px">
+  <h1>Apply for a wholesale account</h1>
+  {% if submitted %}
+    <p>Thank you. Applications are reviewed by our team; approved accounts receive a sign-in link by email.</p>
+    <p class="muted"><a href="{{ url_for('shop.login') }}">Back to sign in</a></p>
+  {% else %}
+  {% set f = form or {} %}
+  <p class="muted">Retailers only. A resale certificate number is required before an account is approved.</p>
+  <form method="post">
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <label>Company *<br><input name="company" required value="{{ f.company or '' }}"></label>
+      <label>Contact name<br><input name="contact" value="{{ f.contact or '' }}"></label>
+      <label>Email *<br><input type="email" name="email" required value="{{ f.email or '' }}"></label>
+      <label>Phone<br><input name="phone" value="{{ f.phone or '' }}"></label>
+      <label>Resale / tax ID number<br><input name="resale_number" value="{{ f.resale_number or '' }}"></label>
+      <label>Website or social<br><input name="website" value="{{ f.website or '' }}"></label>
+      <label>Address<br><input name="address" value="{{ f.address or '' }}"></label>
+      <label>City<br><input name="city" value="{{ f.city or '' }}"></label>
+      <label>State<br><input name="state" value="{{ f.state or '' }}"></label>
+      <label>ZIP<br><input name="zip" value="{{ f.zip or '' }}"></label>
+    </div>
+    <label style="display:block;margin-top:.6rem">Tell us about your store<br><textarea name="notes" rows="3" style="width:100%">{{ f.notes or '' }}</textarea></label>
+    <div style="margin-top:.8rem"><button type="submit">Submit application</button> <a class="btn sec" href="{{ url_for('shop.login') }}">Cancel</a></div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

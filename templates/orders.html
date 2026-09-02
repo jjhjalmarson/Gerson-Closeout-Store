@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Orders · Gerson Closeouts{% endblock %}
+{% block body %}
+<h1>Your closeout orders</h1>
+{% if not rows %}<p class="muted">No orders yet.</p>{% else %}
+<table>
+  <tr><th>Ref</th><th>Submitted</th><th>Type</th><th>Status</th><th class="right">Total</th><th>NetSuite</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td>CO-{{ r.id }}</td><td>{{ r.created_at[:10] }}</td><td>{{ r.kind }}</td>
+    <td>{% if r.status == 'acked' %}confirmed{% elif r.status == 'rejected' %}needs attention{% else %}received{% endif %}</td>
+    <td class="right">{% if r.payload.total is defined %}${{ '%.2f'|format(r.payload.total) }}{% endif %}</td>
+    <td>{% if r.result and r.result.tranid %}{{ r.result.tranid }}{% elif r.result and r.result.message %}<span class="muted">{{ r.result.message }}</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

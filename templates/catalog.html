@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Closeouts</h1>
+<p class="muted">Prices step down on a published schedule and quantities are approximate. Orders ship in full cases; your Gerson rep is credited as usual.</p>
+<form method="get" class="bar">
+  <select name="brand"><option value="">All brands</option>{% for b in facets.brands %}<option value="{{ b }}" {% if b==brand %}selected{% endif %}>{{ b }}</option>{% endfor %}</select>
+  <select name="category"><option value="">All categories</option>{% for c in facets.categories %}<option value="{{ c }}" {% if c==category %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  <input name="q" placeholder="Search SKU or description" value="{{ q }}">
+  <button type="submit" class="sec">Filter</button>
+  {% if brand or category or q %}<a class="btn sec" href="{{ url_for('shop.home') }}">Clear</a>{% endif %}
+</form>
+{% if curated %}
+<h2>Picked for {{ customer.company_name }} <span class="pill">based on what you buy</span></h2>
+<div class="grid">{% for p in curated %}{% include "_card.html" %}{% endfor %}</div>
+<h2>Everything on closeout</h2>
+{% endif %}
+{% if items %}
+<div class="grid">{% for p in items %}{% include "_card.html" %}{% endfor %}</div>
+{% else %}<p class="muted">Nothing matches that filter.</p>{% endif %}
+{% endblock %}

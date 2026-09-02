@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Order received · Gerson Closeouts{% endblock %}
+{% block body %}
+<h1>Order received</h1>
+<p>Reference <b>CO-{{ ref }}</b>. {{ order.lines|length }} line{{ 's' if order.lines|length != 1 }} · ${{ '%.2f'|format(order.total) }}{% if order.po_number %} · PO {{ order.po_number }}{% endif %}</p>
+<p class="muted">Your Gerson team will confirm and enter this as a sales order; you will hear from your rep if anything is short. <a href="{{ url_for('shop.orders') }}">View your orders</a> · <a href="{{ url_for('shop.home') }}">Keep shopping</a></p>
+<table>
+  <tr><th>SKU</th><th>Qty</th><th class="right">Unit</th><th class="right">Extended</th></tr>
+  {% for l in order.lines %}<tr><td>{{ l.sku }}</td><td>{{ l.qty }}</td><td class="right">${{ '%.2f'|format(l.unit_price) }}</td><td class="right">${{ '%.2f'|format(l.qty * l.unit_price) }}</td></tr>{% endfor %}
+</table>
+{% endblock %}

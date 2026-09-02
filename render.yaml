@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: gerson-closeout-store
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --threads 4 --timeout 60
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.6
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gerson-closeout-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: STORE_INGEST_KEY
+        sync: false
+      - key: BASE_URL
+        sync: false
+      - key: MAIL_BACKEND
+        value: log
+
+databases:
+  - name: gerson-closeout-db
+    plan: starter
