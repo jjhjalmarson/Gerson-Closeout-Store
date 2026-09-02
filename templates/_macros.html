@@ -1,0 +1,4 @@
+{# Pack sizes the way buyers read them: inner, then master; the NetSuite minimum only when neither is known (JJ, 2026-09-02). #}
+{% macro pack(p) -%}
+{%- if p.inner_pack %}inner {{ p.inner_pack }}{% endif %}{% if p.master_pack %}{% if p.inner_pack %} · {% endif %}master {{ p.master_pack }}{% endif %}{% if not p.inner_pack and not p.master_pack %}pack of {{ p.case_pack }}{% endif -%}
+{%- endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import pack %}
 {% block title %}Review offer · Gerson Closeout Offers{% endblock %}
 {% block body %}
 <h1>Your offer</h1>
@@ -12,8 +13,8 @@
   {% for l in lines %}
   <tr>
     <td><b>{{ l.description }}</b><br><span class="muted">{{ l.sku }} · {{ l.brand }}{% if l.category %} · {{ l.category }}{% endif %}</span></td>
-    <td class="muted">case of {{ l.case_pack }}{% if l.master_pack %} · master {{ l.master_pack }}{% endif %}</td>
-    <td class="right">about {{ l.qty_available }}</td>
+    <td class="muted">{{ pack(l) }}</td>
+    <td class="right">{{ l.qty_available }}</td>
     <td class="right">${{ '%.2f'|format(l.wholesale) }}</td>
     <td class="right"><input class="qty" type="number" name="qty[{{ l.sku }}]" value="{{ l.qty }}" min="0" step="{{ l.case_pack }}"></td>
     <td class="right"><input class="offer" type="number" name="price[{{ l.sku }}]" value="{{ '%.2f'|format(l.offer_price) }}" min="0" step="0.01"></td>
@@ -29,7 +30,7 @@
 <div class="bar">
   <button type="submit" class="sec">Update lines</button>
   <a class="btn sec" href="{{ url_for('shop.offer_csv') }}">Download CSV</a>
-  <span class="muted">Set a quantity to 0 to remove a line. Quantities snap to whole case packs.</span>
+  <span class="muted">Set a quantity to 0 to remove a line. Quantities snap to whole packs.</span>
 </div>
 </form>
 <form method="post" action="{{ url_for('shop.offer_clear') }}" class="bar" style="background:none;padding:0"><button type="submit" class="sec" onclick="return confirm('Clear every line from this offer?')">Clear the offer</button></form>

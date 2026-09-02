@@ -227,12 +227,44 @@ def _num(raw: Any, cast=float):
         return cast(0)
 
 
+def _apply_line(draft: dict, sku: str, product: dict | None, qty_raw: Any, price_raw: Any, allowed: set) -> dict | None:
+    """Put one typed pair on the draft (snapped to whole packs, capped at what is
+    available) or take the line off when either half is blank / zero / not for
+    this buyer. Returns the saved line or None."""
+    if not product or (product["company"] and product["company"] not in allowed):
+        draft.pop(sku, None)
+        return None
+    qty = _snap_qty(_num(qty_raw, int), product["case_pack"], product["qty_available"])
+    price = round(_num(price_raw), 2)
+    if qty > 0 and price > 0:
+        draft[sku] = {"qty": qty, "price": price}
+        return draft[sku]
+    draft.pop(sku, None)
+    return None
+
+
+@bp.post("/offer/line")
+@access_required
+def offer_line():
+    """Autosave: ``{"sku", "qty", "price"}`` as JSON -> the saved line (or null
+    when the pair removes it) and the draft's line count."""
+    body = request.get_json(silent=True) or {}
+    sku = str(body.get("sku") or "").strip()
+    if not sku:
+        return {"error": "sku required"}, 400
+    store = _ctx().store
+    draft = store.draft(g.buyer["key"])
+    line = _apply_line(draft, sku, store.products_by_skus([sku]).get(sku), body.get("qty"), body.get("price"),
+                       set(g.buyer["companies"]))
+    store.set_draft(g.buyer["key"], draft)
+    return {"saved": True, "sku": sku, "line": line, "count": len(draft)}
+
+
 @bp.post("/offer/set")
 @access_required
 def offer_set():
-    """Save every qty[SKU] / price[SKU] pair on the submitted form into the
-    buyer's draft. A blank or zero pair removes the line. Quantities snap to
-    whole case packs and cap at what is available."""
+    """No-JavaScript fallback: save every qty[SKU] / price[SKU] pair on the
+    submitted form into the buyer's draft (same rules as the autosave)."""
     store = _ctx().store
     draft = store.draft(g.buyer["key"])
     skus = set()
@@ -243,16 +275,7 @@ def offer_set():
     by = store.products_by_skus(skus)
     allowed = set(g.buyer["companies"])
     for sku in skus:
-        p = by.get(sku)
-        if not p or (p["company"] and p["company"] not in allowed):
-            draft.pop(sku, None)
-            continue
-        qty = _snap_qty(_num(request.form.get(f"qty[{sku}]"), int), p["case_pack"], p["qty_available"])
-        price = round(_num(request.form.get(f"price[{sku}]")), 2)
-        if qty > 0 and price > 0:
-            draft[sku] = {"qty": qty, "price": price}
-        else:
-            draft.pop(sku, None)
+        _apply_line(draft, sku, by.get(sku), request.form.get(f"qty[{sku}]"), request.form.get(f"price[{sku}]"), allowed)
     store.set_draft(g.buyer["key"], draft)
     flash(f"{len(draft)} line{'s' if len(draft) != 1 else ''} on your offer.")
     nxt = request.form.get("next") or ""
