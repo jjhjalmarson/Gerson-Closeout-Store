@@ -117,6 +117,24 @@ def item(sku: str):
     return render_template("item.html", customer=g.customer, p=p, in_cart=cart.get(sku, 0), cart_count=sum(cart.values()))
 
 
+@bp.get("/img/<sku>")
+@login_required
+def image(sku: str):
+    """Cached product image, gated like everything else. Fetches on first miss."""
+    from flask import Response
+    from . import images
+    store = _ctx().store
+    p = store.product(sku)
+    if not p or not p.get("image_url"):
+        abort(404)
+    row = images.ensure(store, sku, p["image_url"])
+    if not row or not row.get("data"):
+        abort(404)
+    resp = Response(bytes(row["data"]), mimetype=row.get("content_type") or "image/jpeg")
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    return resp
+
+
 def _snap_qty(qty: int, case_pack: int, available: int) -> int:
     """Whole case packs only, never above what the feed says is available."""
     cp = max(int(case_pack or 1), 1)

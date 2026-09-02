@@ -36,6 +36,7 @@ CURATION = {"kind": "curation", "as_of": "2026-09-01", "count": 1, "items": [{"c
 class StoreTestCase(unittest.TestCase):
     def setUp(self):
         self.app = create_app(_cfg())
+        self.app.config["TESTING"] = True          # no background image fetches in tests
         self.client = self.app.test_client()
         self.store = self.app.config["STORE"].store
 

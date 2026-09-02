@@ -96,6 +96,18 @@ outbox = sa.Table(
     sa.Column("result_json", sa.Text),
 )
 
+# Product images, fetched once from the feed's source URL and served from here
+# so buyers never load a NetSuite / shop URL directly.
+images = sa.Table(
+    "images", metadata,
+    sa.Column("sku", sa.String(64), primary_key=True),
+    sa.Column("source_url", sa.Text, nullable=False),
+    sa.Column("content_type", sa.String(40)),
+    sa.Column("data", sa.LargeBinary),
+    sa.Column("status", sa.String(10), nullable=False, default="ok"),   # ok | failed
+    sa.Column("fetched_at", sa.String(32), nullable=False),
+)
+
 feed_runs = sa.Table(
     "feed_runs", metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
@@ -297,6 +309,37 @@ class Store:
         skus = json.loads(row[0])[:limit]
         by = self.products_by_skus(skus)
         return [by[s] for s in skus if s in by and by[s]["qty_available"] > 0]
+
+    # --- images -------------------------------------------------------------
+
+    def image(self, sku: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.select(images).where(images.c.sku == str(sku))).mappings().first()
+        return dict(row) if row else None
+
+    def put_image(self, sku: str, source_url: str, data: bytes | None, content_type: str | None, *, status: str) -> None:
+        with self.engine.begin() as conn:
+            _upsert(conn, images, [{"sku": str(sku), "source_url": source_url, "content_type": content_type,
+                                    "data": data, "status": status, "fetched_at": now_iso()}], "sku")
+
+    def images_needed(self, limit: int = 400) -> list[tuple[str, str]]:
+        """Active products with a source URL and no fresh cache row for that URL."""
+        stmt = (sa.select(products.c.sku, products.c.image_url)
+                .select_from(products.outerjoin(images, images.c.sku == products.c.sku))
+                .where(products.c.active.is_(True), products.c.image_url != "",
+                       sa.or_(images.c.sku.is_(None), images.c.source_url != products.c.image_url))
+                .order_by(products.c.sku).limit(limit))
+        with self.engine.connect() as conn:
+            return [(r[0], r[1]) for r in conn.execute(stmt)]
+
+    def image_stats(self) -> dict[str, int]:
+        with self.engine.connect() as conn:
+            ok = conn.execute(sa.select(sa.func.count()).select_from(images).where(images.c.status == "ok")).scalar() or 0
+            failed = conn.execute(sa.select(sa.func.count()).select_from(images).where(images.c.status == "failed")).scalar() or 0
+            with_url = conn.execute(sa.select(sa.func.count()).select_from(products)
+                                    .where(products.c.active.is_(True), products.c.image_url != "")).scalar() or 0
+        return {"cached": int(ok), "failed": int(failed), "products_with_image": int(with_url),
+                "pending": max(int(with_url) - int(ok) - int(failed), 0)}
 
     # --- cart ---------------------------------------------------------------
 

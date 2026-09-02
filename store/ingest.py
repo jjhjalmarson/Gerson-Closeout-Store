@@ -62,7 +62,21 @@ def ingest(kind: str):
     store = current_app.config["STORE"].store
     fn = {"catalog": store.ingest_catalog, "customers": store.ingest_customers, "curation": store.ingest_curation}[kind]
     n = fn(body["items"], as_of=body.get("as_of"), generated_at=body.get("generated_at"))
+    if kind == "catalog" and not current_app.config.get("TESTING"):
+        from . import images
+        images.refresh_in_background(store)
     return jsonify({"accepted": True, "kind": kind, "count": n}), 202
+
+
+@bp.post("/images/refresh")
+def images_refresh():
+    """Key-protected: fetch a batch of missing images now (manual nudge / cron)."""
+    if not _keyed():
+        return jsonify({"error": "not found"}), 404
+    from . import images
+    store = current_app.config["STORE"].store
+    limit = min(max(int(request.args.get("limit", 200) or 200), 1), 1000)
+    return jsonify({**images.refresh_missing(store, limit=limit), **store.image_stats()})
 
 
 @bp.get("/outbox")
@@ -90,4 +104,4 @@ def outbox_ack():
 @bp.get("/healthz")
 def healthz():
     store = current_app.config["STORE"].store
-    return jsonify({"ok": True, "feeds": store.feed_status()})
+    return jsonify({"ok": True, "feeds": store.feed_status(), "images": store.image_stats()})
