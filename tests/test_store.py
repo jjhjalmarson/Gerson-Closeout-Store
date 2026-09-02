@@ -234,8 +234,10 @@ class SheetTest(StoreTestCase):
         self.assertIn("Ross Stores", html)
         self.assertIn("Lantern", html); self.assertIn("Tree", html)          # every company
         self.assertIn("$25.00", html); self.assertIn("$100.00", html)        # original wholesale
-        self.assertIn("case of 6", html); self.assertIn("master 24", html); self.assertIn("inner 6", html)
-        self.assertIn("about 96", html)
+        self.assertIn("inner 6 · master 24", html)                            # inner first, then master
+        self.assertIn("pack of 4", html)                                        # T2 has no pack data: NetSuite minimum
+        self.assertNotIn("case of", html); self.assertNotIn("about ", html)
+        self.assertIn(">96<", html)
         for hidden in ("$20.00", "$30.00", "20% off", "70% off", "Drops to", "16.25"):
             self.assertNotIn(hidden, html)                                    # no closeout price, tier or step-down
         self.assertIn('name="qty[L1]"', html); self.assertIn('name="price[L1]"', html)
@@ -289,6 +291,21 @@ class OfferTest(StoreTestCase):
         self.use_invite("tjx-abc")
         self.client.post("/offer/set", data={"qty[T2]": "4", "price[T2]": "40"})
         self.assertEqual(self.store.draft("inv:tjx-abc"), {})
+
+    def test_autosave_line_snaps_and_counts(self):
+        r = self.client.post("/offer/line", json={"sku": "L1", "qty": "7", "price": "12.5"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json(), {"saved": True, "sku": "L1", "line": {"qty": 6, "price": 12.5}, "count": 1})
+        r = self.client.post("/offer/line", json={"sku": "T2", "qty": "8", "price": "35"}).get_json()
+        self.assertEqual((r["line"], r["count"]), ({"qty": 8, "price": 35.0}, 2))
+        r = self.client.post("/offer/line", json={"sku": "L1", "qty": "", "price": "12.5"}).get_json()   # blank qty removes
+        self.assertEqual((r["line"], r["count"]), (None, 1))
+        self.assertEqual(self.client.post("/offer/line", json={}).status_code, 400)
+        self.assertEqual(self.client.post("/offer/line", json={"sku": "NOPE", "qty": 4, "price": 1}).get_json()["line"], None)
+        self.assertEqual(self.store.draft("inv:ross-xyz"), {"T2": {"qty": 8, "price": 35.0}})
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('class="draft-count">1<', html)
+        self.assertIn("/offer/line", html)                                       # autosave script wired
 
     def test_review_page_and_csv(self):
         self.client.post("/offer/set", data={"qty[L1]": "24", "price[L1]": "10", "qty[T2]": "8", "price[T2]": "35"})
