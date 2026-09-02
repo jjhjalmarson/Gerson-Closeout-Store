@@ -1,19 +1,20 @@
 {% extends "base.html" %}
-{% block title %}{{ p.sku }} · Gerson Closeouts{% endblock %}
+{% block title %}{{ p.sku }} · Gerson Closeout Offers{% endblock %}
 {% block body %}
-<p><a href="{{ url_for('shop.home') }}">← Catalog</a></p>
+<p><a href="{{ url_for('shop.home') }}">← Offer sheet</a></p>
 <div style="display:grid;grid-template-columns:minmax(240px,420px) 1fr;gap:1.5rem">
   <div>{% if p.image_url %}<img src="{{ url_for('shop.image', sku=p.sku) }}" alt="" style="width:100%;border-radius:8px;background:var(--panel)">{% endif %}</div>
   <div>
     <h1>{{ p.description }}</h1>
     <div class="muted">{{ p.sku }} · {{ p.brand }}{% if p.category %} · {{ p.category }}{% endif %}{% if p.subcategory %} · {{ p.subcategory }}{% endif %}{% if p.upc %} · UPC {{ p.upc }}{% endif %}</div>
-    <p><span class="price" style="font-size:1.6rem">${{ '%.2f'|format(p.closeout_price) }}</span><span class="was">${{ '%.2f'|format(p.wholesale) }} wholesale</span><span class="off">{{ p.discount_pct }}% off</span></p>
-    {% if p.next_step_date %}<p class="step">Next step-down: ${{ '%.2f'|format(p.next_step_price) }} on {{ p.next_step_date }}. Buy now or wait; either way this is the published schedule.</p>{% endif %}
-    <p class="muted">Sold by the {{ p.unit_label }} · about {{ p.qty_available }} available{% if p.ship_by %} · ships by {{ p.ship_by }}{% endif %}{% if in_cart %} · <b>{{ in_cart }} in your cart</b>{% endif %}</p>
-    <form method="post" action="{{ url_for('shop.cart_add') }}" class="bar">
-      <input type="hidden" name="sku" value="{{ p.sku }}">
-      <label>Quantity <input type="number" name="qty" value="{{ p.order_unit }}" min="{{ p.order_unit }}" step="{{ p.order_unit }}" style="width:6rem"></label>
-      <button type="submit">Add to cart</button>
+    <p><span class="price" style="font-size:1.4rem">${{ '%.2f'|format(p.wholesale) }}</span> <span class="muted">original wholesale</span></p>
+    <p class="muted">Case of {{ p.case_pack }}{% if p.master_pack %} · master carton of {{ p.master_pack }}{% endif %}{% if p.inner_pack %} · inner pack of {{ p.inner_pack }}{% endif %} · about {{ p.qty_available }} available</p>
+    <form method="post" action="{{ url_for('shop.offer_set') }}" class="bar">
+      <input type="hidden" name="next" value="{{ url_for('shop.item', sku=p.sku) }}">
+      <label>Quantity <input class="qty" type="number" name="qty[{{ p.sku }}]" value="{{ draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></label>
+      <label>Your offer / unit <input class="offer" type="number" name="price[{{ p.sku }}]" value="{{ draft_price }}" min="0" step="0.01" placeholder="$"></label>
+      <button type="submit">Save to offer</button>
+      {% if draft_qty %}<span class="muted">On your offer: {{ draft_qty }} at ${{ draft_price }}</span>{% endif %}
     </form>
   </div>
 </div>

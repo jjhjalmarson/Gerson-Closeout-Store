@@ -1,18 +1,19 @@
 {% extends "base.html" %}
-{% block title %}Sign in · Gerson Closeouts{% endblock %}
+{% block title %}Gerson Closeout Offers{% endblock %}
 {% block body %}
 <div class="login">
-  <h1>Sign in</h1>
+  <h1>Closeout offer sheet</h1>
   {% if sent %}
     <p>If <b>{{ email }}</b> is on file for an approved account, a sign-in link is on its way. It works once and expires shortly.</p>
-    <p class="muted">Nothing arrived? Check spam, or contact your Gerson rep to add this email to your account.</p>
+    <p class="muted">Nothing arrived? Check spam, or contact your Gerson representative.</p>
   {% else %}
-    <p class="muted">Closeout pricing is available to approved wholesale accounts only. Enter the email on file with Gerson and we will send you a one-time sign-in link.</p>
+    <p>This sheet is <b>by invitation</b>. If Gerson sent you a link, open it — it signs you in on its own.</p>
+    <p class="muted">Approved wholesale accounts can also sign in with the email on file:</p>
     <form method="post">
-      <label>Email<br><input type="email" name="email" required autofocus style="width:100%"></label>
-      <div style="margin-top:.8rem"><button type="submit">Email me a sign-in link</button></div>
+      <label>Email<br><input type="email" name="email" required style="width:100%"></label>
+      <div style="margin-top:.8rem"><button type="submit" class="sec">Email me a sign-in link</button></div>
     </form>
   {% endif %}
-  <p class="muted" style="margin-top:1.4rem">New to Gerson? <a href="{{ url_for('shop.apply') }}">Apply for a wholesale account</a>.</p>
+  {% if website_url %}<p class="muted" style="margin-top:1.4rem">Looking to shop closeouts at the posted price? They are on our website: <a href="{{ website_url }}">{{ website_url }}</a>.</p>{% endif %}
 </div>
 {% endblock %}

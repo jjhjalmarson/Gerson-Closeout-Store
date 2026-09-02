@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Review offer · Gerson Closeout Offers{% endblock %}
+{% block body %}
+<h1>Your offer</h1>
+{% if not lines %}
+<p class="muted">Nothing on it yet. <a href="{{ url_for('shop.home') }}">Back to the sheet</a> and enter a quantity and an offered price on the items you want.</p>
+{% else %}
+<form method="post" action="{{ url_for('shop.offer_set') }}">
+<input type="hidden" name="next" value="{{ url_for('shop.offer') }}">
+<table>
+  <tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Extended</th></tr>
+  {% for l in lines %}
+  <tr>
+    <td><b>{{ l.description }}</b><br><span class="muted">{{ l.sku }} · {{ l.brand }}{% if l.category %} · {{ l.category }}{% endif %}</span></td>
+    <td class="muted">case of {{ l.case_pack }}{% if l.master_pack %} · master {{ l.master_pack }}{% endif %}</td>
+    <td class="right">about {{ l.qty_available }}</td>
+    <td class="right">${{ '%.2f'|format(l.wholesale) }}</td>
+    <td class="right"><input class="qty" type="number" name="qty[{{ l.sku }}]" value="{{ l.qty }}" min="0" step="{{ l.case_pack }}"></td>
+    <td class="right"><input class="offer" type="number" name="price[{{ l.sku }}]" value="{{ '%.2f'|format(l.offer_price) }}" min="0" step="0.01"></td>
+    <td class="right muted">{% if l.pct_of_wholesale %}{{ (l.pct_of_wholesale * 100)|round|int }}%{% endif %}</td>
+    <td class="right">${{ '%.2f'|format(l.extended) }}</td>
+  </tr>
+  {% endfor %}
+  <tr><td colspan="4" class="right"><b>Total</b> <span class="muted">· {{ lines|length }} line{{ 's' if lines|length != 1 }}</span></td>
+      <td class="right"><b>{{ lines|sum(attribute='qty') }}</b></td><td></td>
+      <td class="right muted">{% if wholesale_total > 0 %}{{ ((total / wholesale_total) * 100)|round|int }}% of ${{ '%.2f'|format(wholesale_total) }}{% endif %}</td>
+      <td class="right"><b>${{ '%.2f'|format(total) }}</b></td></tr>
+</table>
+<div class="bar">
+  <button type="submit" class="sec">Update lines</button>
+  <a class="btn sec" href="{{ url_for('shop.offer_csv') }}">Download CSV</a>
+  <span class="muted">Set a quantity to 0 to remove a line. Quantities snap to whole case packs.</span>
+</div>
+</form>
+<form method="post" action="{{ url_for('shop.offer_clear') }}" class="bar" style="background:none;padding:0"><button type="submit" class="sec" onclick="return confirm('Clear every line from this offer?')">Clear the offer</button></form>
+<h2>Submit</h2>
+<p class="muted">We reply to the email below with an acceptance or a counter. Nothing ships and nothing is charged until both sides agree.</p>
+<form method="post" action="{{ url_for('shop.offer_submit') }}">
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <label>Company *<br><input name="company" required value="{{ form.company or '' }}" style="width:100%"></label>
+    <label>Contact name<br><input name="contact" value="{{ form.contact or '' }}" style="width:100%"></label>
+    <label>Email *<br><input type="email" name="email" required value="{{ form.email or '' }}" style="width:100%"></label>
+    <label>Phone<br><input name="phone" value="{{ form.phone or '' }}" style="width:100%"></label>
+  </div>
+  <label style="display:block;margin-top:.6rem">Notes <span class="muted">(ship-to region, timing, take-all conditions, labeling)</span><br><textarea name="notes" rows="3" maxlength="2000" style="width:100%">{{ form.notes or '' }}</textarea></label>
+  <div class="bar"><button type="submit">Submit offer</button> <span class="muted">You get a copy by email; the lines go to the Gerson closeout team.</span></div>
+</form>
+{% endif %}
+{% endblock %}

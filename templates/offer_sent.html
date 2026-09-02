@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Offer sent · Gerson Closeout Offers{% endblock %}
+{% block body %}
+<h1>Offer received — reference <b>OF-{{ ref }}</b></h1>
+<p class="muted">{{ payload.line_count }} line{{ 's' if payload.line_count != 1 }} · {{ payload.units }} units · ${{ '%.2f'|format(payload.total) }}{% if payload.pct_of_wholesale %} ({{ (payload.pct_of_wholesale * 100)|round|int }}% of wholesale){% endif %}.
+  {% if notified %}It is with the Gerson closeout team now and a copy went to <b>{{ payload.email }}</b>;{% else %}It has been recorded and a copy went to <b>{{ payload.email }}</b>;{% endif %} expect an acceptance or a counter by email.</p>
+<table>
+  <tr><th>SKU</th><th>Description</th><th class="right">Qty</th><th class="right">Wholesale</th><th class="right">Offer</th><th class="right">Extended</th></tr>
+  {% for l in payload.lines %}<tr><td>{{ l.sku }}</td><td>{{ l.description }}</td><td class="right">{{ l.qty }}</td><td class="right">${{ '%.2f'|format(l.wholesale) }}</td><td class="right">${{ '%.2f'|format(l.offer_price) }}</td><td class="right">${{ '%.2f'|format(l.extended) }}</td></tr>{% endfor %}
+</table>
+<p><a class="btn sec" href="{{ url_for('shop.offers') }}">Your submitted offers</a> <a class="btn sec" href="{{ url_for('shop.home') }}">Back to the sheet</a></p>
+{% endblock %}

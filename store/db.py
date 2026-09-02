@@ -79,9 +79,27 @@ login_tokens = sa.Table(
     sa.Column("used_at", sa.String(32)),
 )
 
+# Invite links (leadership, 2026-09-02): the offer sheet is invitation-only.
+# AOI creates and pushes these; anyone holding /i/<token> sees the sheet until
+# the invite expires or AOI revokes it. No login, no password.
+invites = sa.Table(
+    "invites", metadata,
+    sa.Column("token", sa.String(64), primary_key=True),
+    sa.Column("label", sa.String(200), nullable=False, default=""),       # company / who it was sent to
+    sa.Column("contact", sa.String(200), default=""),
+    sa.Column("email", sa.String(200), default=""),
+    sa.Column("companies_json", sa.Text, nullable=False, default="[]"),   # subsidiaries whose SKUs they see
+    sa.Column("expires_at", sa.String(32)),
+    sa.Column("active", sa.Boolean, nullable=False, default=True),
+    sa.Column("updated_at", sa.String(32), nullable=False),
+)
+
+# Offer drafts, one per buyer key ("inv:<token>" or "cust:<id>"):
+# {sku: {"qty": units, "price": offered unit price}}.  Nothing here is a price
+# the store set; it is what the buyer typed.
 carts = sa.Table(
     "carts", metadata,
-    sa.Column("customer_id", sa.String(32), primary_key=True),
+    sa.Column("customer_id", sa.String(96), primary_key=True),
     sa.Column("lines_json", sa.Text, nullable=False, default="{}"),
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
@@ -92,6 +110,7 @@ outbox = sa.Table(
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("kind", sa.String(20), nullable=False, index=True),
     sa.Column("customer_id", sa.String(32)),
+    sa.Column("buyer_key", sa.String(96), index=True),        # "inv:<token>" | "cust:<id>": who to show it to
     sa.Column("payload_json", sa.Text, nullable=False),
     sa.Column("status", sa.String(20), nullable=False, default="pending", index=True),
     sa.Column("created_at", sa.String(32), nullable=False),
@@ -232,6 +251,45 @@ class Store:
                                                    generated_at=generated_at, received_at=now))
         return len(rows)
 
+    def ingest_invites(self, items: Iterable[dict[str, Any]], *, as_of: str | None, generated_at: str | None) -> int:
+        """Full snapshot of invite links: anything AOI no longer sends is revoked."""
+        now = now_iso()
+        rows = []
+        for it in items:
+            tok = str(it.get("token") or "").strip()
+            if not tok:
+                continue
+            comps = [str(c) for c in (it.get("companies") or []) if str(c) in COMPANY_LABELS]
+            rows.append({"token": tok, "label": str(it.get("label") or ""), "contact": str(it.get("contact") or ""),
+                         "email": str(it.get("email") or "").strip().lower(), "companies_json": json.dumps(comps),
+                         "expires_at": (str(it.get("expires_at") or "")[:32] or None), "active": True, "updated_at": now})
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(invites).values(active=False))
+            _upsert(conn, invites, rows, "token")
+            conn.execute(feed_runs.insert().values(kind="invites", count=len(rows), as_of=as_of,
+                                                   generated_at=generated_at, received_at=now))
+        return len(rows)
+
+    def invite(self, token: str) -> dict[str, Any] | None:
+        """Active, unexpired invite for ``token``, with ``companies`` resolved."""
+        tok = str(token or "").strip()
+        if not tok:
+            return None
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.select(invites).where(invites.c.token == tok, invites.c.active.is_(True))).mappings().first()
+        if not row:
+            return None
+        exp = row["expires_at"] or ""
+        if exp and exp[:10] < now_iso()[:10]:
+            return None
+        d = dict(row)
+        try:
+            comps = [c for c in json.loads(d.get("companies_json") or "[]") if c in COMPANY_LABELS]
+        except (TypeError, ValueError):
+            comps = []
+        d["companies"] = comps or list(ALL_COMPANIES)
+        return d
+
     def feed_status(self) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
             sub = sa.select(feed_runs.c.kind, sa.func.max(feed_runs.c.id).label("mid")).group_by(feed_runs.c.kind).subquery()
@@ -294,18 +352,17 @@ class Store:
 
     SORTS = {
         "default": (products.c.brand, products.c.category, products.c.sku),
-        "discount": (products.c.discount_pct.desc(), products.c.brand, products.c.sku),
-        "price_asc": (products.c.closeout_price.asc(), products.c.sku),
-        "price_desc": (products.c.closeout_price.desc(), products.c.sku),
+        "wholesale_asc": (products.c.wholesale.asc(), products.c.sku),
+        "wholesale_desc": (products.c.wholesale.desc(), products.c.sku),
         "qty": (products.c.qty_available.desc(), products.c.sku),
-        "step": (sa.case((products.c.next_step_date.is_(None), 1), else_=0), products.c.next_step_date, products.c.sku),
+        "value": ((products.c.wholesale * products.c.qty_available).desc(), products.c.sku),   # biggest lots first
     }
 
     @staticmethod
-    def _product_filter(*, brand=None, category=None, subcategory=None, discount=None, q=None, companies=None):
+    def _product_filter(*, brand=None, category=None, subcategory=None, q=None, companies=None):
         """Every word of ``q`` must appear somewhere in SKU, description, brand,
-        category or subcategory; ``discount`` is the exact ladder tier (20/33/50);
-        ``companies`` limits to the subsidiaries the buyer holds an account with."""
+        category or subcategory; ``companies`` limits to the subsidiaries the
+        buyer holds an account with (or the invite covers)."""
         conds = [products.c.active.is_(True), products.c.qty_available > 0]
         if companies is not None:
             conds.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
@@ -315,11 +372,6 @@ class Store:
             conds.append(products.c.category == category)
         if subcategory:
             conds.append(products.c.subcategory == subcategory)
-        if discount is not None and str(discount).strip():
-            try:
-                conds.append(products.c.discount_pct == int(str(discount).strip().rstrip("%")))
-            except ValueError:
-                pass
         for word in (q or "").split():
             like = f"%{word}%"
             conds.append(sa.or_(products.c.sku.ilike(like), products.c.description.ilike(like), products.c.brand.ilike(like),
@@ -327,26 +379,25 @@ class Store:
         return conds
 
     def list_products(self, *, brand: str | None = None, category: str | None = None, subcategory: str | None = None,
-                      discount: Any = None, q: str | None = None, sort: str = "default",
+                      q: str | None = None, sort: str = "default",
                       companies: Iterable[str] | None = None, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
-                                                                discount=discount, q=q, companies=companies))
+                                                                q=q, companies=companies))
         stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
 
     def count_products(self, *, brand: str | None = None, category: str | None = None, subcategory: str | None = None,
-                       discount: Any = None, q: str | None = None, companies: Iterable[str] | None = None) -> int:
+                       q: str | None = None, companies: Iterable[str] | None = None) -> int:
         stmt = sa.select(sa.func.count()).select_from(products).where(
-            *self._product_filter(brand=brand, category=category, subcategory=subcategory, discount=discount, q=q,
-                                  companies=companies))
+            *self._product_filter(brand=brand, category=category, subcategory=subcategory, q=q, companies=companies))
         with self.engine.connect() as conn:
             return int(conn.execute(stmt).scalar() or 0)
 
     def facets(self, *, brand: str | None = None, category: str | None = None,
                companies: Iterable[str] | None = None) -> dict[str, list[Any]]:
         """Filter choices that still return something: categories narrow to the
-        chosen brand, subcategories and discount tiers to brand + category."""
+        chosen brand, subcategories to brand + category."""
         base = [products.c.active.is_(True), products.c.qty_available > 0]
         if companies is not None:
             base.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
@@ -361,8 +412,7 @@ class Store:
 
         return {"brands": distinct(products.c.brand, base),
                 "categories": distinct(products.c.category, in_brand),
-                "subcategories": distinct(products.c.subcategory, in_cat),
-                "discounts": distinct(products.c.discount_pct, in_cat, desc=True)}
+                "subcategories": distinct(products.c.subcategory, in_cat)}
 
     def curated_for(self, customer_id: str, limit: int = 24, companies: Iterable[str] | None = None) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
@@ -406,25 +456,33 @@ class Store:
         return {"cached": int(ok), "failed": int(failed), "products_with_image": int(with_url),
                 "pending": max(int(with_url) - int(ok) - int(failed), 0)}
 
-    # --- cart ---------------------------------------------------------------
+    # --- offer drafts ---------------------------------------------------------
 
-    def cart(self, customer_id: str) -> dict[str, int]:
+    def draft(self, buyer_key: str) -> dict[str, dict[str, Any]]:
+        """``{sku: {qty, price}}`` the buyer has typed so far."""
         with self.engine.connect() as conn:
-            row = conn.execute(sa.select(carts.c.lines_json).where(carts.c.customer_id == str(customer_id))).first()
-        return {k: int(v) for k, v in (json.loads(row[0]) if row else {}).items()}
+            row = conn.execute(sa.select(carts.c.lines_json).where(carts.c.customer_id == str(buyer_key))).first()
+        raw = json.loads(row[0]) if row else {}
+        out: dict[str, dict[str, Any]] = {}
+        for k, v in raw.items():
+            if isinstance(v, dict):
+                out[str(k)] = {"qty": int(v.get("qty") or 0), "price": float(v.get("price") or 0.0)}
+        return out
 
-    def set_cart(self, customer_id: str, lines: dict[str, int]) -> None:
-        clean = {str(k): int(v) for k, v in lines.items() if int(v) > 0}
+    def set_draft(self, buyer_key: str, lines: Mapping[str, Mapping[str, Any]]) -> None:
+        clean = {str(k): {"qty": int(v.get("qty") or 0), "price": round(float(v.get("price") or 0.0), 2)}
+                 for k, v in lines.items() if int(v.get("qty") or 0) > 0 and float(v.get("price") or 0.0) > 0}
         with self.engine.begin() as conn:
-            _upsert(conn, carts, [{"customer_id": str(customer_id), "lines_json": json.dumps(clean), "updated_at": now_iso()}],
+            _upsert(conn, carts, [{"customer_id": str(buyer_key), "lines_json": json.dumps(clean), "updated_at": now_iso()}],
                     "customer_id")
 
     # --- outbox -------------------------------------------------------------
 
-    def enqueue(self, kind: str, payload: dict[str, Any], customer_id: str | None = None) -> int:
+    def enqueue(self, kind: str, payload: dict[str, Any], customer_id: str | None = None,
+                buyer_key: str | None = None) -> int:
         with self.engine.begin() as conn:
-            res = conn.execute(outbox.insert().values(kind=kind, customer_id=customer_id, payload_json=json.dumps(payload),
-                                                      status="pending", created_at=now_iso()))
+            res = conn.execute(outbox.insert().values(kind=kind, customer_id=customer_id, buyer_key=buyer_key,
+                                                      payload_json=json.dumps(payload), status="pending", created_at=now_iso()))
             return int(res.inserted_primary_key[0])
 
     def pull_outbox(self, limit: int = 200) -> list[dict[str, Any]]:
@@ -451,9 +509,14 @@ class Store:
                 n += res.rowcount or 0
         return n
 
-    def outbox_for_customer(self, customer_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    def outbox_for(self, buyer_key: str, limit: int = 20) -> list[dict[str, Any]]:
+        """What this buyer submitted (offers, and any older orders under a customer id)."""
+        key = str(buyer_key)
+        conds = [outbox.c.buyer_key == key]
+        if key.startswith("cust:"):
+            conds.append(outbox.c.customer_id == key[5:])
         with self.engine.connect() as conn:
-            rows = conn.execute(sa.select(outbox).where(outbox.c.customer_id == str(customer_id))
+            rows = conn.execute(sa.select(outbox).where(sa.or_(*conds))
                                 .order_by(outbox.c.id.desc()).limit(limit)).mappings().all()
         return [{"id": r["id"], "kind": r["kind"], "status": r["status"], "created_at": r["created_at"],
                  "payload": json.loads(r["payload_json"]), "result": json.loads(r["result_json"]) if r["result_json"] else None}
@@ -509,7 +572,8 @@ def _ensure_columns(eng: Engine) -> None:
     insp = sa.inspect(eng)
     wanted = {"products": {"master_pack": "INTEGER NOT NULL DEFAULT 0", "inner_pack": "INTEGER NOT NULL DEFAULT 0",
                            "company": "VARCHAR(20) NOT NULL DEFAULT ''"},
-              "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'"}}
+              "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'"},
+              "outbox": {"buyer_key": "VARCHAR(96)"}}
     with eng.begin() as conn:
         for table, cols in wanted.items():
             have = {c["name"] for c in insp.get_columns(table)}

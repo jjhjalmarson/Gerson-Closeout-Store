@@ -14,7 +14,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 bp = Blueprint("ingest", __name__)
 
-KINDS = ("catalog", "customers", "curation")
+KINDS = ("catalog", "customers", "curation", "invites")
 FORBIDDEN_KEYS = frozenset({
     "avg_cost", "ats_cost", "econ_cost", "cost", "unit_cost", "haircut", "receipt_date", "date_source", "days",
     "age_months", "bucket", "aging_bucket", "adv_rate", "advance_rate", "capacity_now", "capacity_at_risk",
@@ -59,13 +59,15 @@ def ingest(kind: str):
     if hit:
         current_app.logger.error("ingest %s REFUSED: forbidden key at %s", kind, hit)
         return jsonify({"error": f"forbidden key at {hit}"}), 422
-    if kind == "customers" and not body["items"]:
-        # A customers push replaces the whole allowlist; an empty one would log
-        # every buyer out. Suspend accounts one at a time in AOI instead.
-        current_app.logger.error("ingest customers REFUSED: empty feed would wipe the allowlist")
-        return jsonify({"error": "empty customers feed refused: it would deactivate every account"}), 409
+    if kind in ("customers", "invites") and not body["items"]:
+        # A customers / invites push replaces the whole allowlist; an empty one
+        # would log every buyer out or kill every invite link. Suspend or revoke
+        # one at a time in AOI instead.
+        current_app.logger.error("ingest %s REFUSED: empty feed would wipe the allowlist", kind)
+        return jsonify({"error": f"empty {kind} feed refused: it would deactivate every account"}), 409
     store = current_app.config["STORE"].store
-    fn = {"catalog": store.ingest_catalog, "customers": store.ingest_customers, "curation": store.ingest_curation}[kind]
+    fn = {"catalog": store.ingest_catalog, "customers": store.ingest_customers, "curation": store.ingest_curation,
+          "invites": store.ingest_invites}[kind]
     n = fn(body["items"], as_of=body.get("as_of"), generated_at=body.get("generated_at"))
     if kind == "catalog" and not current_app.config.get("TESTING"):
         from . import images

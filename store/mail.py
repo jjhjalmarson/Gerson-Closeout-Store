@@ -1,4 +1,5 @@
-"""Outbound mail for sign-in links.
+"""Outbound mail: sign-in links and submitted offers (to the designated
+inbox and back to the buyer), with optional attachments.
 
 Backends (``MAIL_BACKEND``):
 
@@ -48,7 +49,9 @@ def _graph_token(cfg, session: Any) -> str:
     return _token_cache["value"]
 
 
-def _send_graph(cfg, *, to: str, subject: str, body: str, session: Any = None) -> bool:
+def _send_graph(cfg, *, to: str, subject: str, body: str, session: Any = None,
+                attachments: list[tuple[str, bytes, str]] | None = None) -> bool:
+    import base64
     import requests
     sess = session or requests.Session()
     token = _graph_token(cfg, sess)
@@ -60,6 +63,11 @@ def _send_graph(cfg, *, to: str, subject: str, body: str, session: Any = None) -
         },
         "saveToSentItems": False,
     }
+    if attachments:
+        payload["message"]["attachments"] = [
+            {"@odata.type": "#microsoft.graph.fileAttachment", "name": name, "contentType": ctype,
+             "contentBytes": base64.b64encode(data).decode("ascii")}
+            for name, data, ctype in attachments]
     r = sess.post(f"{_GRAPH_HOST}/users/{cfg.graph_sender_mailbox}/sendMail", json=payload,
                   headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, timeout=30)
     if r.status_code == 401:
@@ -69,10 +77,14 @@ def _send_graph(cfg, *, to: str, subject: str, body: str, session: Any = None) -
     return True
 
 
-def _send_smtp(cfg, *, to: str, subject: str, body: str) -> bool:
+def _send_smtp(cfg, *, to: str, subject: str, body: str,
+               attachments: list[tuple[str, bytes, str]] | None = None) -> bool:
     msg = EmailMessage()
     msg["From"], msg["To"], msg["Subject"] = cfg.mail_from, to, subject
     msg.set_content(body)
+    for name, data, ctype in attachments or []:
+        maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
+        msg.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream", filename=name)
     with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=30) as s:
         s.starttls()
         if cfg.smtp_user:
@@ -81,15 +93,18 @@ def _send_smtp(cfg, *, to: str, subject: str, body: str) -> bool:
     return True
 
 
-def send(cfg, *, to: str, subject: str, body: str, session: Any = None) -> bool:
-    """Send one plain-text email. Never raises to the caller: a login attempt
-    must not leak whether mail worked. Returns True on success."""
+def send(cfg, *, to: str, subject: str, body: str, session: Any = None,
+         attachments: list[tuple[str, bytes, str]] | None = None) -> bool:
+    """Send one plain-text email, optionally with ``[(filename, bytes, mime)]``
+    attachments. Never raises to the caller: a login attempt must not leak
+    whether mail worked. Returns True on success."""
     try:
         if cfg.mail_backend == "graph" and cfg.graph_client_id:
-            return _send_graph(cfg, to=to, subject=subject, body=body, session=session)
+            return _send_graph(cfg, to=to, subject=subject, body=body, session=session, attachments=attachments)
         if cfg.mail_backend == "smtp" and cfg.smtp_host:
-            return _send_smtp(cfg, to=to, subject=subject, body=body)
-        log.info("MAIL (log backend) to=%s subject=%s\n%s", to, subject, body)
+            return _send_smtp(cfg, to=to, subject=subject, body=body, attachments=attachments)
+        log.info("MAIL (log backend) to=%s subject=%s attachments=%s\n%s", to, subject,
+                 [x[0] for x in attachments or []], body)
         return True
     except Exception as exc:
         log.error("mail send to %s failed: %s", to, exc)

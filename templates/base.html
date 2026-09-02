@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>{% block title %}Gerson Closeouts{% endblock %}</title>
+<title>{% block title %}Gerson Closeout Offers{% endblock %}</title>
 <style>
   :root { --ink:#1f2430; --muted:#5b6472; --panel:#eef1f4; --line:#d5dae1; --accent:#d97706; --teal:#0e8c8a; }
   * { box-sizing:border-box; }
@@ -13,39 +13,36 @@
   header .brand { font-weight:700; font-size:1.1rem; }
   header nav { margin-left:auto; display:flex; gap:1rem; align-items:center; font-size:.9rem; }
   header .muted { color:var(--muted); }
-  main { max-width:1200px; margin:0 auto; padding:1rem 1.2rem 3rem; }
+  main { max-width:1280px; margin:0 auto; padding:1rem 1.2rem 3rem; }
   .flash { background:#fff3cd; border:1px solid #f1d38a; padding:.5rem .8rem; border-radius:6px; margin:.6rem 0; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:1rem; }
-  .card { border:1px solid var(--line); border-radius:8px; padding:.7rem; display:flex; flex-direction:column; gap:.35rem; background:#fff; }
-  .card img { width:100%; aspect-ratio:1; object-fit:contain; background:var(--panel); border-radius:6px; }
-  .card .t { font-weight:600; font-size:.95rem; min-height:2.6em; }
-  .price { font-size:1.15rem; font-weight:700; }
-  .was { color:var(--muted); text-decoration:line-through; font-size:.85rem; margin-left:.4rem; }
-  .off { color:var(--accent); font-weight:700; font-size:.85rem; margin-left:.4rem; }
-  .step { color:var(--muted); font-size:.8rem; }
   .muted { color:var(--muted); }
   .bar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; background:var(--panel); padding:.6rem .8rem; border-radius:8px; margin:.8rem 0; }
   input, select, textarea { font:inherit; padding:.35rem .5rem; border:1px solid var(--line); border-radius:6px; }
-  button, .btn { font:inherit; padding:.4rem .8rem; border:0; border-radius:6px; background:var(--teal); color:#fff; cursor:pointer; text-decoration:none; }
+  input.offer { width:6.5rem; text-align:right; }
+  input.qty { width:5.5rem; text-align:right; }
+  button, .btn { font:inherit; padding:.4rem .8rem; border:0; border-radius:6px; background:var(--teal); color:#fff; cursor:pointer; text-decoration:none; display:inline-block; }
   button.sec, .btn.sec { background:#fff; color:var(--ink); border:1px solid var(--line); }
-  table { border-collapse:collapse; width:100%; } th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--line); vertical-align:top; }
+  table { border-collapse:collapse; width:100%; } th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--line); vertical-align:middle; }
   th { font-size:.8rem; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; }
   .right { text-align:right; }
+  td.thumb { width:64px; } td.thumb img, td.thumb .ph { width:56px; height:56px; object-fit:contain; background:var(--panel); border-radius:6px; display:block; }
+  .price { font-weight:700; }
   h1 { font-size:1.5rem; margin:.4rem 0 .6rem; } h2 { font-size:1.15rem; margin:1.2rem 0 .5rem; }
-  .login { max-width:420px; margin:3rem auto; padding:1.5rem; border:1px solid var(--line); border-radius:10px; }
+  .login { max-width:460px; margin:3rem auto; padding:1.5rem; border:1px solid var(--line); border-radius:10px; }
   .pill { display:inline-block; background:var(--panel); border-radius:999px; padding:.1rem .5rem; font-size:.75rem; color:var(--muted); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:1rem; }
 </style>
 </head>
 <body>
 <header>
-  <span class="brand">Gerson Closeouts</span>
-  {% if customer %}
-  <span class="muted">{{ customer.company_name }}{% if customer.rep_name %} · your rep: {{ customer.rep_name }}{% endif %}</span>
+  <span class="brand">Gerson Closeout Offers</span>
+  {% if buyer %}
+  <span class="muted">{{ buyer.name }}{% if buyer.rep_name %} · your rep: {{ buyer.rep_name }}{% endif %}</span>
   <nav>
-    <a href="{{ url_for('shop.home') }}">Catalog</a>
-    <a href="{{ url_for('shop.orders') }}">Orders</a>
-    <a href="{{ url_for('shop.cart') }}">Cart{% if cart_count %} ({{ cart_count }}){% endif %}</a>
-    <form method="post" action="{{ url_for('shop.logout') }}" style="margin:0"><button class="sec" type="submit">Sign out</button></form>
+    <a href="{{ url_for('shop.home') }}">Offer sheet</a>
+    <a href="{{ url_for('shop.offer') }}"><b>Review offer{% if draft_count %} ({{ draft_count }}){% endif %}</b></a>
+    <a href="{{ url_for('shop.offers') }}">Submitted</a>
+    <form method="post" action="{{ url_for('shop.logout') }}" style="margin:0"><button class="sec" type="submit">{{ 'Sign out' if buyer.kind == 'customer' else 'Leave' }}</button></form>
   </nav>
   {% endif %}
 </header>
