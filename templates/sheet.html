@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Closeout offer sheet</h1>
+<p class="muted">Original wholesale and pack sizes are shown for every item. Enter a quantity and the unit price you are offering, save, and submit when you are done — our team replies by email with an acceptance or a counter. Quantities are approximate and snap to whole case packs.</p>
+<form method="get" class="bar" id="filters">
+  <select name="brand" onchange="this.form.category.value='';this.form.subcategory.value='';this.form.submit()">
+    <option value="">All brands</option>{% for b in facets.brands %}<option value="{{ b }}" {% if b==brand %}selected{% endif %}>{{ b }}</option>{% endfor %}</select>
+  <select name="category" onchange="this.form.subcategory.value='';this.form.submit()">
+    <option value="">All categories</option>{% for c in facets.categories %}<option value="{{ c }}" {% if c==category %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  <select name="subcategory" onchange="this.form.submit()" {% if facets.subcategories|length < 2 and not subcategory %}style="display:none"{% endif %}>
+    <option value="">All subcategories</option>{% for c in facets.subcategories %}<option value="{{ c }}" {% if c==subcategory %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  <select name="sort" onchange="this.form.submit()">
+    <option value="" {% if sort=='default' %}selected{% endif %}>Brand / category</option>
+    <option value="value" {% if sort=='value' %}selected{% endif %}>Biggest lots first</option>
+    <option value="qty" {% if sort=='qty' %}selected{% endif %}>Most available</option>
+    <option value="wholesale_asc" {% if sort=='wholesale_asc' %}selected{% endif %}>Wholesale: low to high</option>
+    <option value="wholesale_desc" {% if sort=='wholesale_desc' %}selected{% endif %}>Wholesale: high to low</option>
+  </select>
+  <input name="q" placeholder="Search: any words in SKU, description, brand, category" value="{{ q }}" style="min-width:18rem">
+  <button type="submit" class="sec">Search</button>
+  {% if filtered or sort!='default' %}<a class="btn sec" href="{{ url_for('shop.home') }}">Clear</a>{% endif %}
+  <span class="muted" style="margin-left:auto">{{ total }} item{{ '' if total==1 else 's' }}{% if pages > 1 %} · page {{ page }} of {{ pages }}{% endif %}</span>
+</form>
+{% if items %}
+<form method="post" action="{{ url_for('shop.offer_set') }}">
+<input type="hidden" name="next" value="{{ request.full_path }}">
+<div class="bar">
+  <button type="submit">Save offers on this page</button>
+  <a class="btn sec" href="{{ url_for('shop.offer') }}">Review offer{% if draft_count %} ({{ draft_count }} line{{ 's' if draft_count != 1 }}){% endif %}</a>
+  <span class="muted">Save before changing pages or filters; saved lines stay on your offer until you submit or clear it.</span>
+</div>
+<table>
+  <tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Qty</th><th class="right">Your offer / unit</th></tr>
+  {% for p in items %}
+  <tr>
+    <td class="thumb"><a href="{{ url_for('shop.item', sku=p.sku) }}">{% if p.image_url %}<img src="{{ url_for('shop.image', sku=p.sku) }}" alt="" loading="lazy">{% else %}<span class="ph"></span>{% endif %}</a></td>
+    <td><a href="{{ url_for('shop.item', sku=p.sku) }}" style="color:inherit;text-decoration:none"><b>{{ p.description }}</b></a><br><span class="muted">{{ p.sku }} · {{ p.brand }}{% if p.category %} · {{ p.category }}{% endif %}{% if p.subcategory %} · {{ p.subcategory }}{% endif %}</span></td>
+    <td class="muted">case of {{ p.case_pack }}{% if p.master_pack %}<br>master {{ p.master_pack }}{% endif %}{% if p.inner_pack %} · inner {{ p.inner_pack }}{% endif %}</td>
+    <td class="right">about {{ p.qty_available }}</td>
+    <td class="right price">${{ '%.2f'|format(p.wholesale) }}</td>
+    <td class="right"><input class="qty" type="number" name="qty[{{ p.sku }}]" value="{{ p.draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></td>
+    <td class="right"><input class="offer" type="number" name="price[{{ p.sku }}]" value="{{ p.draft_price }}" min="0" step="0.01" placeholder="$"></td>
+  </tr>
+  {% endfor %}
+</table>
+<div class="bar">
+  <button type="submit">Save offers on this page</button>
+  <a class="btn sec" href="{{ url_for('shop.offer') }}">Review offer{% if draft_count %} ({{ draft_count }}){% endif %}</a>
+</div>
+</form>
+{% if pages > 1 %}
+<nav class="bar" style="justify-content:center">
+  {% if page > 1 %}<a class="btn sec" href="{{ url_for('shop.home', page=page-1, **page_args) }}">&larr; Previous</a>{% endif %}
+  <span class="muted">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a class="btn sec" href="{{ url_for('shop.home', page=page+1, **page_args) }}">Next &rarr;</a>{% endif %}
+</nav>
+{% endif %}
+{% else %}<p class="muted">Nothing matches that filter.</p>{% endif %}
+{% endblock %}

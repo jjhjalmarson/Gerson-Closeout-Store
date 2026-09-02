@@ -29,6 +29,10 @@ services:
         sync: false
       - key: GRAPH_SENDER_MAILBOX
         sync: false
+      - key: OFFER_NOTIFY_EMAILS
+        sync: false
+      - key: WEBSITE_URL
+        sync: false
 
 databases:
   - name: gerson-closeout-db

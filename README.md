@@ -1,42 +1,55 @@
-# Gerson Closeout Store
+# Gerson Closeout Offers
 
-Customer-facing, fully gated storefront for aged inventory. This service is
+Invitation-only offer sheet for aged inventory, aimed at key accounts and
+regional / off-price buyers (leadership decision 2026-09-02). This service is
 deliberately **dumb about why anything is priced the way it is**: it receives
-three sanitized feeds from the internal AOI engine, lets approved buyers log in,
-browse and order, and leaves everything it collects in an outbox that AOI polls.
+sanitized feeds from the internal AOI engine, shows each SKU's original
+wholesale, pack sizes and a blank offer field, collects offers, emails them to
+the designated inbox and leaves them in an outbox that AOI polls. Independents
+are pointed at the public SuiteCommerce site, where the closeout ladder is
+carried by NetSuite pricing groups.
 
 **It holds no credential to AOI or NetSuite.** Every connection starts inside:
 AOI pushes to `/ingest/*` with this store's key, and AOI pulls `/outbox` with
-the same key. See `docs/closeout-platform-brief.md` §11 in the AOI repo.
+the same key. See `docs/closeout-platform-brief.md` §0 / §11 in the AOI repo.
 
 ## What the store knows
 
 | Feed | Contents | Never contains |
 |---|---|---|
-| `catalog` | SKU, description, image, brand, category, case pack, wholesale, closeout price, next step-down date/price, approximate quantity, lot, ship-by | cost, receipt date, age, bucket, advance rate, floors, tier, state |
-| `customers` | NetSuite customer id, company, login emails, buyer class, volume tier, rep name | AR, order history, credit |
-| `curation` | per-customer ordered SKU lists | the history behind the ranking |
+| `catalog` | SKU, description, image, brand, category, case / master / inner pack, wholesale, approximate quantity, company | cost, receipt date, age, bucket, advance rate, floors, tier, state |
+| `invites` | invite token, label (who it went to), contact, email, companies, expiry | anything else |
+| `customers` | allowlisted NetSuite accounts (id, company, login emails, rep) — may also sign in by magic link | AR, order history, credit |
+| `curation` | per-customer SKU lists (kept for AOI compatibility; not shown on the sheet) | the history behind the ranking |
 
-Anything a buyer does (order, offer, application, hold) is written to the
-`outbox` table and handed to AOI on its next poll; AOI writes the NetSuite
-sales order and returns the decision on the next feed push.
+The catalog feed still carries the ladder price for AOI's own use; **the sheet
+never shows it** — buyers see original wholesale and type what they will pay.
+
+## How a buyer uses it
+
+1. Opens `/i/<token>` (created and revoked in AOI's Closeout tab). Allowlisted
+   accounts can alternatively request a one-time sign-in link by email.
+2. Filters / searches the sheet, enters quantities (snapped to whole case
+   packs, capped at what is available) and an offered unit price, saves.
+3. Reviews the offer, downloads it as CSV if they like, adds company / contact
+   / email / notes and submits.
+4. The offer is emailed to every address in `OFFER_NOTIFY_EMAILS` and copied
+   to the buyer (text table + CSV attachment), and written to the `outbox` as
+   kind `offer`. People answer by email — accept or counter — and AOI's inbox
+   keeps the record.
 
 ## Run locally
 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env            # set SECRET_KEY and STORE_INGEST_KEY at minimum
-flask --app app run --debug
+python run_dev.py --feeds path/to/closeout_feed   # seeds SQLite, prints a sign-in link and /i/demo-invite
 ```
 
 Defaults to SQLite (`store.db`). Set `DATABASE_URL=postgresql+psycopg://...` for
-Render Postgres. Emails print to the log unless `MAIL_BACKEND=smtp`.
-
-Seed a dev catalog from the AOI feed files:
-
-```bash
-python -m scripts.ingest_files --key $STORE_INGEST_KEY --base http://localhost:5000 path/to/closeout_feed
-```
+Render Postgres. Emails print to the log unless `MAIL_BACKEND=graph` or `smtp`.
+Set `OFFER_NOTIFY_EMAILS` (comma-separated) in production, and `WEBSITE_URL`
+so the sign-in page can point independents at the shoppable site.
 
 ## Tests
 

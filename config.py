@@ -31,6 +31,15 @@ class Config:
     graph_client_secret: str = ""
     graph_sender_mailbox: str = ""
     min_order_total: float = 300.0       # site-wide minimum order, in dollars (JJ, 2026-09-02)
+    # Where submitted offers go (comma-separated). Leadership 2026-09-02: offers are
+    # emailed to a designated address; people counter by email.
+    offer_notify_emails: str = ""
+    # The public SuiteCommerce site independents are sent to (shown on the sign-in page).
+    website_url: str = ""
+
+    @property
+    def offer_notify_list(self) -> list[str]:
+        return [e.strip() for e in self.offer_notify_emails.replace(";", ",").split(",") if e.strip()]
 
     @property
     def testing_defaults(self) -> bool:
@@ -60,4 +69,6 @@ def load_config() -> Config:
         graph_client_secret=_env("GRAPH_CLIENT_SECRET"),
         graph_sender_mailbox=_env("GRAPH_SENDER_MAILBOX"),
         min_order_total=float(_env("MIN_ORDER_TOTAL", "300") or 300),
+        offer_notify_emails=_env("OFFER_NOTIFY_EMAILS"),
+        website_url=_env("WEBSITE_URL").rstrip("/"),
     )
