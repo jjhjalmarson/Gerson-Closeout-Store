@@ -88,6 +88,13 @@ class IngestGateTest(StoreTestCase):
         r = self.ingest("customers", {**CUSTOMERS, "items": [{**CUSTOMERS["items"][0], "Bucket": "x"}]})
         self.assertEqual(r.status_code, 422)
 
+    def test_refuses_empty_customers_feed(self):
+        self.seed()
+        r = self.ingest("customers", {**CUSTOMERS, "count": 0, "items": []})
+        self.assertEqual(r.status_code, 409)
+        self.assertIsNotNone(self.store.customer_for_email("donna-n@live.com"))   # allowlist untouched
+        self.assertEqual(self.ingest("curation", {**CURATION, "count": 0, "items": []}).status_code, 202)
+
     def test_bad_kind_and_body(self):
         self.assertEqual(self.ingest("prices", CATALOG).status_code, 400)
         self.assertEqual(self.ingest("catalog", {"items": "nope"}).status_code, 400)
@@ -141,7 +148,8 @@ class LoginTest(StoreTestCase):
     def test_deactivated_customer_is_logged_out(self):
         self.seed()
         self.login()
-        self.ingest("customers", {**CUSTOMERS, "items": []})               # allowlist snapshot without them
+        other = {**CUSTOMERS["items"][0], "customer_id": "999", "emails": ["someone@else.com"]}
+        self.ingest("customers", {**CUSTOMERS, "items": [other]})          # allowlist snapshot without them
         r = self.client.get("/")
         self.assertEqual(r.status_code, 302)
 

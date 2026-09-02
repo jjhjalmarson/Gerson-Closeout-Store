@@ -59,6 +59,11 @@ def ingest(kind: str):
     if hit:
         current_app.logger.error("ingest %s REFUSED: forbidden key at %s", kind, hit)
         return jsonify({"error": f"forbidden key at {hit}"}), 422
+    if kind == "customers" and not body["items"]:
+        # A customers push replaces the whole allowlist; an empty one would log
+        # every buyer out. Suspend accounts one at a time in AOI instead.
+        current_app.logger.error("ingest customers REFUSED: empty feed would wipe the allowlist")
+        return jsonify({"error": "empty customers feed refused: it would deactivate every account"}), 409
     store = current_app.config["STORE"].store
     fn = {"catalog": store.ingest_catalog, "customers": store.ingest_customers, "curation": store.ingest_curation}[kind]
     n = fn(body["items"], as_of=body.get("as_of"), generated_at=body.get("generated_at"))
