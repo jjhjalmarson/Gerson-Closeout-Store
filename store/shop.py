@@ -172,7 +172,7 @@ def cart_add():
     except ValueError:
         qty = 0
     cart = store.cart(g.customer["customer_id"])
-    new_qty = _snap_qty(cart.get(sku, 0) + qty, p["case_pack"], p["qty_available"])
+    new_qty = _snap_qty(cart.get(sku, 0) + qty, p["order_unit"], p["qty_available"])
     if new_qty > 0:
         cart[sku] = new_qty
     else:
@@ -197,7 +197,7 @@ def cart_set():
         except ValueError:
             qty = 0
         p = by.get(sku)
-        q = _snap_qty(qty, p["case_pack"], p["qty_available"]) if p else 0
+        q = _snap_qty(qty, p["order_unit"], p["qty_available"]) if p else 0
         if q > 0:
             cart[sku] = q
         else:
@@ -214,12 +214,13 @@ def _priced_cart(store, customer_id: str) -> tuple[list[dict[str, Any]], float]:
         p = by.get(sku)
         if not p:
             continue
-        q = _snap_qty(qty, p["case_pack"], p["qty_available"])
+        q = _snap_qty(qty, p["order_unit"], p["qty_available"])
         if q <= 0:
             continue
         ext = round(q * float(p["closeout_price"]), 2)
         total += ext
         lines.append({"sku": sku, "description": p["description"], "qty": q, "case_pack": p["case_pack"],
+                      "order_unit": p["order_unit"], "unit_label": p["unit_label"],
                       "unit_price": float(p["closeout_price"]), "wholesale": float(p["wholesale"]), "extended": ext,
                       "image_url": p["image_url"], "ship_by": p["ship_by"]})
     return lines, round(total, 2)
@@ -229,7 +230,9 @@ def _priced_cart(store, customer_id: str) -> tuple[list[dict[str, Any]], float]:
 @login_required
 def cart():
     lines, total = _priced_cart(_ctx().store, g.customer["customer_id"])
-    return render_template("cart.html", customer=g.customer, lines=lines, total=total, cart_count=sum(l["qty"] for l in lines))
+    min_total = float(_ctx().cfg.min_order_total or 0)
+    return render_template("cart.html", customer=g.customer, lines=lines, total=total, min_total=min_total,
+                           short=round(max(min_total - total, 0.0), 2), cart_count=sum(l["qty"] for l in lines))
 
 
 @bp.post("/checkout")
@@ -239,6 +242,10 @@ def checkout():
     lines, total = _priced_cart(store, g.customer["customer_id"])
     if not lines:
         flash("Your cart is empty.")
+        return redirect(url_for("shop.cart"))
+    min_total = float(_ctx().cfg.min_order_total or 0)
+    if total < min_total:
+        flash(f"Orders must total at least ${min_total:,.0f}. Add ${min_total - total:,.2f} more.")
         return redirect(url_for("shop.cart"))
     order = {
         "customer_id": g.customer["customer_id"],

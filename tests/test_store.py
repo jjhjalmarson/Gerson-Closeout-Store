@@ -23,7 +23,7 @@ CATALOG = {"kind": "catalog", "version": 1, "as_of": "2026-09-01", "generated_at
     {"sku": "L1", "internal_id": "1", "description": "Lantern", "image_url": "https://img/l1.jpg", "brand": "Fall/Holiday",
      "category": "Christmas", "subcategory": "Ornaments", "season": "Fall-Christmas 2024", "case_pack": 6, "upc": "1",
      "wholesale": 25.0, "closeout_price": 20.0, "discount_pct": 20, "next_step_date": "2027-01-17", "next_step_price": 16.25,
-     "qty_available": 96, "lot": "Fall/Holiday | Christmas | Ornaments", "ship_by": "2026-12-15"},
+     "qty_available": 96, "lot": "Fall/Holiday | Christmas | Ornaments", "ship_by": "2026-12-15", "master_pack": 24, "inner_pack": 6},
     {"sku": "T2", "internal_id": "2", "description": "Tree", "image_url": "", "brand": "Park Hill Collection", "category": "Decor",
      "subcategory": "", "season": "", "case_pack": 4, "upc": "", "wholesale": 100.0, "closeout_price": 30.0, "discount_pct": 70,
      "next_step_date": None, "next_step_price": None, "qty_available": 8, "lot": "PH | Decor", "ship_by": None},
@@ -202,19 +202,48 @@ class CatalogAndCartTest(StoreTestCase):
         self.assertEqual(self.client.get("/?page=99").status_code, 200)             # clamps, no error
         self.assertEqual([p["sku"] for p in self.store.list_products(sort="discount", limit=1)], ["T2"])
 
-    def test_cart_snaps_to_cases_and_caps_at_available(self):
-        self.client.post("/cart/add", data={"sku": "L1", "qty": "7"})       # -> 6
-        self.assertEqual(self.store.cart("26003"), {"L1": 6})
-        self.client.post("/cart/add", data={"sku": "L1", "qty": "1000"})    # -> capped at 96
+    def test_cart_snaps_to_master_cartons_then_inners(self):
+        p = self.store.product("L1")
+        self.assertEqual((p["order_unit"], p["unit_label"]), (24, "master carton of 24"))
+        self.client.post("/cart/add", data={"sku": "L1", "qty": "7"})       # under a master -> nothing
+        self.assertEqual(self.store.cart("26003"), {})
+        self.client.post("/cart/add", data={"sku": "L1", "qty": "30"})      # -> one master carton
+        self.assertEqual(self.store.cart("26003"), {"L1": 24})
+        self.client.post("/cart/add", data={"sku": "L1", "qty": "1000"})    # -> capped at 96 (4 masters)
         self.assertEqual(self.store.cart("26003"), {"L1": 96})
-        self.client.post("/cart/add", data={"sku": "T2", "qty": "abc"})     # bad qty -> nothing added
-        self.assertNotIn("T2", self.store.cart("26003"))
-        self.client.post("/cart/set", data={"qty[L1]": "0"})
+        # fewer than a master left: inners of 6
+        self.ingest("catalog", {**CATALOG, "items": [{**CATALOG["items"][0], "qty_available": 20}, CATALOG["items"][1]]})
+        p = self.store.product("L1")
+        self.assertEqual((p["order_unit"], p["unit_label"]), (6, "inner pack of 6 (fewer than a master carton left)"))
+        self.client.post("/cart/set", data={"qty[L1]": "20"})
+        self.assertEqual(self.store.cart("26003"), {"L1": 18})
+        self.assertEqual(self.store.product("T2")["unit_label"], "case of 4")   # no pack data: NetSuite minimum
+
+    def test_minimum_order_total(self):
+        self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})       # $120
+        html = self.client.get("/cart").get_data(as_text=True)
+        self.assertIn("Minimum order is $300", html); self.assertIn("$180.00 more", html)
+        r = self.client.post("/checkout", follow_redirects=True)
+        self.assertIn("at least $300", r.get_data(as_text=True))
+        self.assertEqual(self.store.pull_outbox(), [])
+        self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})       # $240 -> still short
+        self.client.post("/cart/add", data={"sku": "L1", "qty": "24"})      # + $480
+        self.assertEqual(self.client.post("/checkout").status_code, 200)
+        self.assertEqual(len(self.store.pull_outbox()), 1)
+
+    def test_cart_snaps_to_cases_and_caps_at_available(self):
+        self.client.post("/cart/add", data={"sku": "T2", "qty": "5"})       # case of 4 -> 4
+        self.assertEqual(self.store.cart("26003"), {"T2": 4})
+        self.client.post("/cart/add", data={"sku": "L1", "qty": "1000"})    # -> capped at 96
+        self.assertEqual(self.store.cart("26003")["L1"], 96)
+        self.client.post("/cart/add", data={"sku": "T2", "qty": "abc"})     # bad qty -> nothing changes
+        self.assertEqual(self.store.cart("26003")["T2"], 4)
+        self.client.post("/cart/set", data={"qty[L1]": "0", "qty[T2]": "0"})
         self.assertEqual(self.store.cart("26003"), {})
         self.assertEqual(self.client.post("/cart/add", data={"sku": "NOPE", "qty": "1"}).status_code, 404)
 
     def test_checkout_reprices_from_catalog_and_enqueues(self):
-        self.client.post("/cart/add", data={"sku": "L1", "qty": "12"})
+        self.client.post("/cart/add", data={"sku": "L1", "qty": "24"})
         self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})
         # price change lands between cart and checkout: checkout uses the current catalog price
         self.ingest("catalog", {**CATALOG, "items": [{**CATALOG["items"][0], "closeout_price": 18.0}, CATALOG["items"][1]]})
@@ -222,14 +251,14 @@ class CatalogAndCartTest(StoreTestCase):
         self.assertEqual(r.status_code, 200)
         html = r.get_data(as_text=True)
         self.assertIn("CO-1", html)
-        self.assertIn("$336.00", html)                                       # 12 x 18 + 4 x 30
+        self.assertIn("$552.00", html)                                       # 24 x 18 + 4 x 30
         items = self.store.pull_outbox()
         o = items[0]
         self.assertEqual(o["kind"], "order")
         self.assertEqual(o["customer_id"], "26003")
         self.assertEqual(o["payload"]["po_number"], "PO-77")
-        self.assertEqual(o["payload"]["lines"], [{"sku": "L1", "qty": 12, "unit_price": 18.0}, {"sku": "T2", "qty": 4, "unit_price": 30.0}])
-        self.assertEqual(o["payload"]["total"], 336.0)
+        self.assertEqual(o["payload"]["lines"], [{"sku": "L1", "qty": 24, "unit_price": 18.0}, {"sku": "T2", "qty": 4, "unit_price": 30.0}])
+        self.assertEqual(o["payload"]["total"], 552.0)
         self.assertEqual(self.store.cart("26003"), {})
         # empty cart cannot check out
         r = self.client.post("/checkout", follow_redirects=True)
@@ -237,6 +266,7 @@ class CatalogAndCartTest(StoreTestCase):
 
     def test_orders_page_reflects_ack(self):
         self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})
+        self.client.post("/cart/add", data={"sku": "L1", "qty": "24"})      # over the $300 minimum
         self.client.post("/checkout")
         items = self.store.pull_outbox()
         self.store.ack_outbox([{"id": items[0]["id"], "status": "acked", "result": {"tranid": "SO123456"}}])

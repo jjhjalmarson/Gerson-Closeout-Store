@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
@@ -27,6 +27,8 @@ products = sa.Table(
     sa.Column("subcategory", sa.String(120), default=""),
     sa.Column("season", sa.String(80), default=""),
     sa.Column("case_pack", sa.Integer, nullable=False, default=1),
+    sa.Column("master_pack", sa.Integer, nullable=False, default=0),   # units per master carton (0 = unknown)
+    sa.Column("inner_pack", sa.Integer, nullable=False, default=0),    # units per inner pack (0 = none)
     sa.Column("upc", sa.String(32), default=""),
     sa.Column("wholesale", sa.Numeric(12, 2), nullable=False, default=0),
     sa.Column("closeout_price", sa.Numeric(12, 2), nullable=False, default=0),
@@ -134,6 +136,7 @@ def make_engine(url: str) -> Engine:
         kw["pool_pre_ping"] = True
     eng = sa.create_engine(url, **kw)
     metadata.create_all(eng)
+    _ensure_columns(eng)
     return eng
 
 
@@ -170,6 +173,7 @@ class Store:
                 "brand": str(it.get("brand") or ""), "category": str(it.get("category") or ""),
                 "subcategory": str(it.get("subcategory") or ""), "season": str(it.get("season") or ""),
                 "case_pack": max(int(it.get("case_pack") or 1), 1), "upc": str(it.get("upc") or ""),
+                "master_pack": max(int(float(it.get("master_pack") or 0)), 0), "inner_pack": max(int(float(it.get("inner_pack") or 0)), 0),
                 "wholesale": float(it.get("wholesale") or 0), "closeout_price": float(it.get("closeout_price") or 0),
                 "discount_pct": int(it.get("discount_pct") or 0), "next_step_date": it.get("next_step_date"),
                 "next_step_price": it.get("next_step_price"), "qty_available": int(it.get("qty_available") or 0),
@@ -443,4 +447,31 @@ def _prod(r) -> dict[str, Any]:
     for k in ("wholesale", "closeout_price", "next_step_price"):
         if d.get(k) is not None:
             d[k] = float(d[k])
+    d["order_unit"], d["unit_label"] = order_unit(d)
     return d
+
+
+def order_unit(p: Mapping[str, Any]) -> tuple[int, str]:
+    """How many units one click buys.  Whole master cartons while at least one
+    is left; then inner packs; then the NetSuite minimum (JJ, 2026-09-02)."""
+    master = int(p.get("master_pack") or 0)
+    inner = int(p.get("inner_pack") or 0)
+    cp = max(int(p.get("case_pack") or 1), 1)
+    avail = int(p.get("qty_available") or 0)
+    if master > 0 and avail >= master:
+        return master, f"master carton of {master}"
+    if inner > 0:
+        return inner, f"inner pack of {inner}" + (" (fewer than a master carton left)" if master > 0 else "")
+    return cp, f"case of {cp}"
+
+
+def _ensure_columns(eng: Engine) -> None:
+    """Add columns introduced after a table already existed (create_all never
+    alters).  Idempotent; SQLite and Postgres both accept plain ADD COLUMN."""
+    insp = sa.inspect(eng)
+    have = {c["name"] for c in insp.get_columns("products")}
+    wanted = {"master_pack": "INTEGER NOT NULL DEFAULT 0", "inner_pack": "INTEGER NOT NULL DEFAULT 0"}
+    with eng.begin() as conn:
+        for name, ddl in wanted.items():
+            if name not in have:
+                conn.execute(sa.text(f"ALTER TABLE products ADD COLUMN {name} {ddl}"))
