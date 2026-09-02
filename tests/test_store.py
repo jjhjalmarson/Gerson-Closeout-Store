@@ -385,6 +385,97 @@ class OfferTest(StoreTestCase):
         self.assertEqual(len(app.config["STORE"].store.pull_outbox()), 1)
 
 
+class NegotiationRoundTest(StoreTestCase):
+    def setUp(self):
+        super().setUp()
+        self.seed()
+        self.use_invite("ross-xyz")
+        self.client.post("/offer/set", data={"qty[L1]": "24", "price[L1]": "10", "qty[T2]": "8", "price[T2]": "35"})
+        self.client.post("/offer/submit", data={"company": "Ross Stores", "email": "sam@ross.test"})
+        self.offer_id = self.store.pull_outbox()[0]["id"]
+        self.sent.clear()
+
+    def push(self, **over):
+        body = {"offer_ref": self.offer_id, "round_id": 7, "round_no": 2, "token": "tok-2", "kind": "counter", "thread_status": "countered",
+                "lines": [{"sku": "L1", "qty": 24, "price": 14.0, "description": "Lantern", "wholesale": 25.0},
+                          {"sku": "T2", "qty": 8, "price": 45.0, "description": "Tree", "wholesale": 100.0}],
+                "message": "Best we can do on the trees.", "created_at": "2026-09-02T21:00:00+00:00", "buyer_email": "sam@ross.test", "company": "Ross Stores"}
+        body.update(over)
+        return self.client.post("/rounds", json=body, headers={"X-API-Key": KEY})
+
+    def test_push_is_keyed_validated_and_emails_a_link(self):
+        self.assertEqual(self.client.post("/rounds", json={}).status_code, 404)
+        self.assertEqual(self.push(token="").status_code, 400)
+        self.assertEqual(self.push(kind="bribe").status_code, 400)
+        self.assertEqual(self.push(offer_ref=999).status_code, 404)
+        self.assertEqual(self.push(lines=[{"sku": "L1", "qty": 1, "price": 1, "avg_cost": 3}]).status_code, 422)   # cost never lands here
+        r = self.push()
+        self.assertEqual((r.status_code, r.get_json()["status"], r.get_json()["emailed"]), (202, "open", True))
+        m = self.sent[-1]
+        self.assertEqual(m["to"], "sam@ross.test")
+        self.assertIn(f"Gerson countered your offer — OF-{self.offer_id}", m["subject"])
+        self.assertIn("http://store.test/o/tok-2", m["body"]); self.assertIn("Best we can do", m["body"]); self.assertIn("14.00", m["body"])
+
+    def test_round_page_shows_trail_and_accepting_writes_a_response(self):
+        self.push()
+        html = self.client.get("/o/tok-2").get_data(as_text=True)
+        self.assertIn("Gerson countered your offer", html)
+        self.assertIn("$14.00", html); self.assertIn("$10.00", html)            # their price next to yours
+        self.assertIn("Best we can do", html)
+        self.assertNotIn("cost", html.lower().replace("closeout", ""))          # nothing internal on the page
+        self.assertEqual(self.client.get("/o/nope").status_code, 404)
+        r = self.client.post("/o/tok-2/respond", data={"action": "accept", "message": "Deal."})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("accepted", r.get_data(as_text=True).lower())
+        items = [i for i in self.store.pull_outbox() if i["kind"] == "offer_response"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["payload"], {"offer_ref": self.offer_id, "round_id": 7, "token": "tok-2", "action": "accept", "lines": [],
+                                               "message": "Deal.", "email": "sam@ross.test"})
+        self.assertEqual(items[0]["customer_id"], None)
+        # the link is now read-only; a second answer is refused
+        html = self.client.get("/o/tok-2").get_data(as_text=True)
+        self.assertNotIn('name="action"', html)
+        r = self.client.post("/o/tok-2/respond", data={"action": "decline"}, follow_redirects=True)
+        self.assertIn("already answered", r.get_data(as_text=True))
+        self.store.ack_outbox([{"id": items[0]["id"], "status": "acked"}])
+        self.assertEqual(len([i for i in self.store.pull_outbox() if i["kind"] == "offer_response"]), 0)   # nothing new queued
+
+    def test_counter_back_and_same_terms_mean_accept(self):
+        self.push()
+        r = self.client.post("/o/tok-2/respond", data={"action": "counter", "qty[L1]": "48", "price[L1]": "12", "qty[T2]": "0", "price[T2]": "45",
+                                                       "message": "12 if we take 48"})
+        self.assertEqual(r.status_code, 200)
+        resp = [i for i in self.store.pull_outbox() if i["kind"] == "offer_response"][0]["payload"]
+        self.assertEqual((resp["action"], resp["lines"], resp["message"]),
+                         ("counter", [{"sku": "L1", "qty": 48, "price": 12.0, "description": "Lantern", "wholesale": 25.0}], "12 if we take 48"))
+        # AOI answers with round 3; round 2's link is closed
+        self.push(token="tok-3", round_id=8, round_no=3, lines=[{"sku": "L1", "qty": 48, "price": 13.0}])
+        self.assertEqual(self.store.round("tok-2")["status"], "responded")
+        r = self.client.post("/o/tok-3/respond", data={"action": "counter", "qty[L1]": "48", "price[L1]": "13.00"})
+        resp = [i for i in self.store.pull_outbox() if i["kind"] == "offer_response"][-1]["payload"]
+        self.assertEqual(resp["action"], "accept")                              # typing the same terms back is acceptance
+        html = self.client.get("/offers").get_data(as_text=True)
+        self.assertIn("counter answered", html)
+
+    def test_accept_and_decline_pushes_close_the_thread_and_email(self):
+        self.push()
+        r = self.push(token="tok-3", round_id=8, round_no=3, kind="accept", thread_status="accepted", message="Done.")
+        self.assertEqual(r.get_json()["status"], "closed")
+        self.assertEqual(self.store.round("tok-2")["status"], "closed")          # superseded
+        self.assertIn("Your offer is accepted", self.sent[-1]["subject"])
+        self.assertIn("enter the order", self.sent[-1]["body"])
+        html = self.client.get("/o/tok-3").get_data(as_text=True)
+        self.assertIn("accepted", html.lower()); self.assertNotIn('name="action"', html)
+        r = self.client.post("/o/tok-2/respond", data={"action": "accept"}, follow_redirects=True)
+        self.assertIn("already answered or the offer is closed", r.get_data(as_text=True))
+        r = self.push(token="tok-4", round_id=9, round_no=4, kind="decline", thread_status="declined", lines=[], message="Too low.")
+        self.assertIn("declined", self.sent[-1]["subject"].lower()); self.assertIn("Too low.", self.sent[-1]["body"])
+        # a re-push of an answered round never reopens it
+        self.store.respond_round("tok-4", {"x": 1}) if False else None
+        self.push(token="tok-3", round_id=8, round_no=3, kind="accept", thread_status="accepted")
+        self.assertEqual(self.store.round("tok-3")["status"], "closed")
+
+
 class OutboxProtocolTest(StoreTestCase):
     def test_pull_marks_pulled_and_retries_until_acked(self):
         self.store.enqueue("order", {"total": 1}, "26003", buyer_key="cust:26003")

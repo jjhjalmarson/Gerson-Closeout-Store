@@ -10,7 +10,8 @@
     <td>{{ 'OF' if r.kind == 'offer' else 'CO' }}-{{ r.id }}</td><td>{{ r.created_at[:10] }}</td><td>{{ r.kind }}</td>
     <td class="right">{% if r.payload.line_count is defined %}{{ r.payload.line_count }}{% elif r.payload.lines is defined %}{{ r.payload.lines|length }}{% endif %}</td>
     <td class="right">{% if r.payload.total is defined %}${{ '%.2f'|format(r.payload.total) }}{% endif %}</td>
-    <td>{% if r.result and r.result.tranid %}entered as {{ r.result.tranid }}{% elif r.result and r.result.message %}<span class="muted">{{ r.result.message }}</span>{% elif r.status == 'rejected' %}needs attention{% else %}received — reply comes by email{% endif %}</td>
+    <td>{% if r.round %}<a href="{{ url_for('shop.round_view', token=r.round.token) }}"><b>{% if r.round.kind == 'counter' and r.round.status == 'open' %}Gerson countered — answer here{% elif r.round.kind == 'counter' %}counter answered — view{% elif r.round.kind in ('accept', 'recorded') %}accepted — view terms{% else %}declined — view{% endif %}</b></a>
+      {% elif r.result and r.result.tranid %}entered as {{ r.result.tranid }}{% elif r.result and r.result.message %}<span class="muted">{{ r.result.message }}</span>{% elif r.status == 'rejected' %}needs attention{% else %}received — reply comes by email{% endif %}</td>
   </tr>
   {% endfor %}
 </table>

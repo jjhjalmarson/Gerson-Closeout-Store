@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pack %}
+{% block title %}{{ title }} · OF-{{ offer.id }}{% endblock %}
+{% block body %}
+<h1>{{ title }} <span class="muted" style="font-weight:normal">· offer OF-{{ offer.id }}{% if offer.payload.company %} · {{ offer.payload.company }}{% endif %}</span></h1>
+{% if rnd.message %}<p><b>From Gerson:</b> {{ rnd.message }}</p>{% endif %}
+{% if not open %}
+  <p class="muted">{% if rnd.kind == 'counter' and rnd.status == 'responded' %}You answered this round{% if rnd.response and rnd.response.action %} ({{ rnd.response.action }}){% endif %}; the Gerson team has it.{% elif rnd.kind in ('accept', 'recorded') %}These are the agreed terms. The Gerson team will enter the order and confirm.{% elif rnd.kind == 'decline' %}This offer is closed. You are welcome to submit a new one from the sheet.{% else %}This round has been superseded by a newer one — check your email for the latest link.{% endif %}</p>
+{% endif %}
+{% if lines %}
+<form method="post" action="{{ url_for('shop.round_respond', token=rnd.token) }}">
+<table>
+  <tr><th>Item</th><th class="right">Wholesale</th><th class="right">Your offer</th><th class="right">Gerson{% if open %} counter{% endif %}</th><th class="right">Qty</th><th class="right">Extended</th>{% if open %}<th class="right">Your reply qty</th><th class="right">Your reply price</th>{% endif %}</tr>
+  {% for l in lines %}
+  <tr>
+    <td><b>{{ l.description or l.sku }}</b><br><span class="muted">{{ l.sku }}</span></td>
+    <td class="right">{% if l.wholesale %}${{ '%.2f'|format(l.wholesale) }}{% endif %}</td>
+    <td class="right muted">{% if l.your_price %}${{ '%.2f'|format(l.your_price) }}{% if l.your_qty and l.your_qty != l.qty %} × {{ l.your_qty }}{% endif %}{% endif %}</td>
+    <td class="right"><b>${{ '%.2f'|format(l.price) }}</b></td>
+    <td class="right">{{ l.qty }}</td>
+    <td class="right">${{ '%.2f'|format(l.qty * l.price) }}</td>
+    {% if open %}
+    <td class="right"><input class="qty" type="number" name="qty[{{ l.sku }}]" value="{{ l.qty }}" min="0"></td>
+    <td class="right"><input class="offer" type="number" name="price[{{ l.sku }}]" value="{{ '%.2f'|format(l.price) }}" min="0" step="0.01"></td>
+    {% endif %}
+  </tr>
+  {% endfor %}
+  <tr><td colspan="5" class="right"><b>Total</b></td><td class="right"><b>${{ '%.2f'|format(rnd.total) }}</b></td>{% if open %}<td colspan="2"></td>{% endif %}</tr>
+</table>
+{% if open %}
+<div class="bar">
+  <label style="flex:1 1 100%">Message <input name="message" maxlength="2000" style="width:100%" placeholder="optional"></label>
+  <button type="submit" name="action" value="accept">Accept these terms</button>
+  <button type="submit" name="action" value="counter" class="sec">Counter with my reply columns</button>
+  <button type="submit" name="action" value="decline" class="sec" onclick="return confirm('Decline and close this offer?')">Decline</button>
+  <span class="muted">Leaving the reply columns as they are and clicking Counter is the same as accepting.</span>
+</div>
+{% endif %}
+</form>
+{% endif %}
+<h2>Trail</h2>
+<ul class="muted">
+  <li><b>Your offer</b> · {{ offer.created_at[:16] }} · {{ original|length }} line{{ 's' if original|length != 1 }} · ${{ '%.2f'|format(original_total) }}{% if offer.payload.notes %} · “{{ offer.payload.notes }}”{% endif %}</li>
+  {% for r in trail %}
+  <li><b>Round {{ r.round_no }} · Gerson {{ r.kind }}</b> · {{ r.created_at[:16] }}{% if r.lines %} · {{ r.lines|length }} line{{ 's' if r.lines|length != 1 }} · ${{ '%.2f'|format(r.total) }}{% endif %}{% if r.message %} · “{{ r.message }}”{% endif %}
+    {% if r.response %} → <b>you {{ r.response.action }}</b>{% if r.response.lines %} ({{ r.response.lines|map(attribute='sku')|join(', ') }}){% endif %}{% if r.response.message %} “{{ r.response.message }}”{% endif %}{% endif %}
+    {% if r.token != rnd.token %}<a href="{{ url_for('shop.round_view', token=r.token) }}">view</a>{% endif %}</li>
+  {% endfor %}
+</ul>
+{% endblock %}
