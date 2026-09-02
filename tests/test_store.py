@@ -23,14 +23,17 @@ CATALOG = {"kind": "catalog", "version": 1, "as_of": "2026-09-01", "generated_at
     {"sku": "L1", "internal_id": "1", "description": "Lantern", "image_url": "https://img/l1.jpg", "brand": "Fall/Holiday",
      "category": "Christmas", "subcategory": "Ornaments", "season": "Fall-Christmas 2024", "case_pack": 6, "upc": "1",
      "wholesale": 25.0, "closeout_price": 20.0, "discount_pct": 20, "next_step_date": "2027-01-17", "next_step_price": 16.25,
-     "qty_available": 96, "lot": "Fall/Holiday | Christmas | Ornaments", "ship_by": "2026-12-15", "master_pack": 24, "inner_pack": 6},
+     "qty_available": 96, "lot": "Fall/Holiday | Christmas | Ornaments", "ship_by": "2026-12-15", "master_pack": 24, "inner_pack": 6,
+     "company": "gerson"},
     {"sku": "T2", "internal_id": "2", "description": "Tree", "image_url": "", "brand": "Park Hill Collection", "category": "Decor",
      "subcategory": "", "season": "", "case_pack": 4, "upc": "", "wholesale": 100.0, "closeout_price": 30.0, "discount_pct": 70,
-     "next_step_date": None, "next_step_price": None, "qty_available": 8, "lot": "PH | Decor", "ship_by": None},
+     "next_step_date": None, "next_step_price": None, "qty_available": 40, "lot": "PH | Decor", "ship_by": None, "company": "park_hill"},
 ]}
 CUSTOMERS = {"kind": "customers", "as_of": "2026-09-01", "count": 1, "items": [
     {"customer_id": "26003", "entity_id": "1FASACA", "company_name": "Adeline Collective", "emails": ["donna-n@live.com", "buyer@shop.com"],
-     "buyer_class": "independent", "volume_tier": "B", "rep_name": "Brooks Mickel", "house_account": False}]}
+     "buyer_class": "independent", "volume_tier": "B", "rep_name": "Brooks Mickel", "house_account": False,
+     "accounts": {"gerson": "26003", "park_hill": "26777"}}]}
+GERSON_ONLY = {**CUSTOMERS, "items": [{**CUSTOMERS["items"][0], "accounts": {"gerson": "26003"}}]}
 CURATION = {"kind": "curation", "as_of": "2026-09-01", "count": 1, "items": [{"customer_id": "26003", "skus": ["T2", "L1", "ZZZ"]}]}
 
 
@@ -219,17 +222,37 @@ class CatalogAndCartTest(StoreTestCase):
         self.assertEqual(self.store.cart("26003"), {"L1": 18})
         self.assertEqual(self.store.product("T2")["unit_label"], "case of 4")   # no pack data: NetSuite minimum
 
-    def test_minimum_order_total(self):
-        self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})       # $120
+    def test_minimum_order_total_applies_per_company(self):
+        self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})       # Park Hill $120
         html = self.client.get("/cart").get_data(as_text=True)
         self.assertIn("Minimum order is $300", html); self.assertIn("$180.00 more", html)
         r = self.client.post("/checkout", follow_redirects=True)
         self.assertIn("at least $300", r.get_data(as_text=True))
         self.assertEqual(self.store.pull_outbox(), [])
-        self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})       # $240 -> still short
-        self.client.post("/cart/add", data={"sku": "L1", "qty": "24"})      # + $480
+        self.client.post("/cart/add", data={"sku": "L1", "qty": "24"})      # Gerson $480: fine, but Park Hill still short
+        html = self.client.get("/cart").get_data(as_text=True)
+        self.assertIn("per company", html); self.assertIn("$180.00 more of Park Hill product", html)
+        r = self.client.post("/checkout", follow_redirects=True)
+        self.assertIn("Park Hill product", r.get_data(as_text=True))
+        self.assertEqual(self.store.pull_outbox(), [])
+        self.client.post("/cart/add", data={"sku": "T2", "qty": "8"})       # Park Hill $360
         self.assertEqual(self.client.post("/checkout").status_code, 200)
-        self.assertEqual(len(self.store.pull_outbox()), 1)
+        self.assertEqual(len(self.store.pull_outbox()), 2)
+
+    def test_buyer_sees_only_their_companies(self):
+        self.ingest("customers", GERSON_ONLY)
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Lantern", html); self.assertNotIn("Tree", html)          # Park Hill product hidden
+        self.assertIn("Picked for", html)                                       # curated block keeps L1, drops T2
+        self.assertEqual(self.store.facets(companies=["gerson"])["brands"], ["Fall/Holiday"])
+        self.assertEqual(self.client.get("/item/T2").status_code, 404)
+        self.assertEqual(self.client.post("/cart/add", data={"sku": "T2", "qty": "4"}).status_code, 404)
+        self.assertEqual(self.client.get("/item/L1").status_code, 200)
+        cust = self.store.customer("26003")
+        self.assertEqual((cust["companies"], cust["accounts"]), (["gerson"], {"gerson": "26003"}))
+        # a feed without accounts (older AOI) means every company under the login id
+        self.ingest("customers", {**CUSTOMERS, "items": [{k: v for k, v in CUSTOMERS["items"][0].items() if k != "accounts"}]})
+        self.assertEqual(self.store.customer("26003")["accounts"], {"gerson": "26003", "park_hill": "26003"})
 
     def test_cart_snaps_to_cases_and_caps_at_available(self):
         self.client.post("/cart/add", data={"sku": "T2", "qty": "5"})       # case of 4 -> 4
@@ -244,29 +267,31 @@ class CatalogAndCartTest(StoreTestCase):
 
     def test_checkout_reprices_from_catalog_and_enqueues(self):
         self.client.post("/cart/add", data={"sku": "L1", "qty": "24"})
-        self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})
+        self.client.post("/cart/add", data={"sku": "T2", "qty": "12"})
         # price change lands between cart and checkout: checkout uses the current catalog price
         self.ingest("catalog", {**CATALOG, "items": [{**CATALOG["items"][0], "closeout_price": 18.0}, CATALOG["items"][1]]})
         r = self.client.post("/checkout", data={"po_number": "PO-77", "notes": "ring bell", "ship_date": "2026-10-01"})
         self.assertEqual(r.status_code, 200)
         html = r.get_data(as_text=True)
-        self.assertIn("CO-1", html)
-        self.assertIn("$552.00", html)                                       # 24 x 18 + 4 x 30
-        items = self.store.pull_outbox()
-        o = items[0]
-        self.assertEqual(o["kind"], "order")
-        self.assertEqual(o["customer_id"], "26003")
-        self.assertEqual(o["payload"]["po_number"], "PO-77")
-        self.assertEqual(o["payload"]["lines"], [{"sku": "L1", "qty": 24, "unit_price": 18.0}, {"sku": "T2", "qty": 4, "unit_price": 30.0}])
-        self.assertEqual(o["payload"]["total"], 552.0)
+        self.assertIn("CO-1", html); self.assertIn("CO-2", html)              # one order per company
+        self.assertIn("$432.00", html); self.assertIn("$360.00", html)        # 24 x 18 (Gerson) and 12 x 30 (Park Hill)
+        items = sorted(self.store.pull_outbox(), key=lambda i: i["id"])
+        self.assertEqual([i["kind"] for i in items], ["order", "order"])
+        by = {i["payload"]["company"]: i for i in items}
+        g, ph = by["gerson"], by["park_hill"]
+        self.assertEqual((g["customer_id"], g["payload"]["customer_id"]), ("26003", "26003"))     # login id / Gerson record
+        self.assertEqual((ph["customer_id"], ph["payload"]["customer_id"]), ("26003", "26777"))   # login id / Park Hill record
+        self.assertEqual(g["payload"]["po_number"], "PO-77")
+        self.assertEqual(g["payload"]["lines"], [{"sku": "L1", "qty": 24, "unit_price": 18.0}])
+        self.assertEqual(ph["payload"]["lines"], [{"sku": "T2", "qty": 12, "unit_price": 30.0}])
+        self.assertEqual((g["payload"]["total"], ph["payload"]["total"]), (432.0, 360.0))
         self.assertEqual(self.store.cart("26003"), {})
         # empty cart cannot check out
         r = self.client.post("/checkout", follow_redirects=True)
         self.assertIn("Your cart is empty", r.get_data(as_text=True))
 
     def test_orders_page_reflects_ack(self):
-        self.client.post("/cart/add", data={"sku": "T2", "qty": "4"})
-        self.client.post("/cart/add", data={"sku": "L1", "qty": "24"})      # over the $300 minimum
+        self.client.post("/cart/add", data={"sku": "T2", "qty": "12"})      # Park Hill $360, over the minimum
         self.client.post("/checkout")
         items = self.store.pull_outbox()
         self.store.ack_outbox([{"id": items[0]["id"], "status": "acked", "result": {"tranid": "SO123456"}}])

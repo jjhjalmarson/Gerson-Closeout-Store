@@ -7,7 +7,9 @@
 <form method="post" action="{{ url_for('shop.cart_set') }}">
 <table>
   <tr><th>Item</th><th>Pack</th><th>Qty</th><th class="right">Unit</th><th class="right">Extended</th></tr>
-  {% for l in lines %}
+  {% for gp in groups %}
+  {% if groups|length > 1 %}<tr><td colspan="5" style="background:var(--panel)"><b>{{ gp.label }}</b> <span class="muted">· ships and invoices as its own order</span></td></tr>{% endif %}
+  {% for l in gp.lines %}
   <tr>
     <td>{{ l.description }}<br><span class="muted">{{ l.sku }}{% if l.ship_by %} · ships by {{ l.ship_by }}{% endif %}</span></td>
     <td>{{ l.unit_label }}</td>
@@ -16,12 +18,14 @@
     <td class="right">${{ '%.2f'|format(l.extended) }}</td>
   </tr>
   {% endfor %}
+  {% if groups|length > 1 %}<tr><td colspan="4" class="right">{{ gp.label }} subtotal{% if gp.short > 0 %} <span class="muted">· ${{ '%.2f'|format(gp.short) }} short of the ${{ '%.0f'|format(min_total) }} minimum</span>{% endif %}</td><td class="right">${{ '%.2f'|format(gp.total) }}</td></tr>{% endif %}
+  {% endfor %}
   <tr><td colspan="4" class="right"><b>Total</b></td><td class="right"><b>${{ '%.2f'|format(total) }}</b></td></tr>
 </table>
 <div class="bar"><button type="submit" class="sec">Update quantities</button> <span class="muted">Set a quantity to 0 to remove a line. Quantities snap to whole master cartons, or inner packs once fewer than a master is left.</span></div>
 </form>
 <h2>Place order</h2>
-{% if short > 0 %}<p class="muted"><b>Minimum order is ${{ '%.0f'|format(min_total) }}.</b> Add ${{ '%.2f'|format(short) }} more to place this order.</p>{% endif %}
+{% if short > 0 %}<p class="muted"><b>Minimum order is ${{ '%.0f'|format(min_total) }}{% if groups|length > 1 %} per company{% endif %}.</b> {% for gp in groups if gp.short > 0 %}Add ${{ '%.2f'|format(gp.short) }} more{% if groups|length > 1 %} of {{ gp.label }} product{% endif %}. {% endfor %}</p>{% endif %}
 <form method="post" action="{{ url_for('shop.checkout') }}" class="bar">
   <label>Your PO number <input name="po_number" maxlength="40"></label>
   <label style="flex:1 1 100%">Notes <input name="notes" maxlength="1000" style="width:100%"></label>

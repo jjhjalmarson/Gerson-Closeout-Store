@@ -13,6 +13,7 @@ from typing import Any
 from flask import (Blueprint, abort, current_app, flash, g, redirect, render_template, request, session, url_for)
 
 from . import mail
+from .db import COMPANY_LABELS
 
 bp = Blueprint("shop", __name__)
 PAGE_SIZE = 60
@@ -109,15 +110,16 @@ def home():
     except ValueError:
         page = 1
     filtered = any(f.values())
-    curated = store.curated_for(g.customer["customer_id"]) if not filtered and page == 1 else []
-    total = store.count_products(**f)
+    companies = g.customer["companies"]
+    curated = store.curated_for(g.customer["customer_id"], companies=companies) if not filtered and page == 1 else []
+    total = store.count_products(**f, companies=companies)
     pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
     page = min(page, pages)
-    items = store.list_products(**f, sort=sort, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
+    items = store.list_products(**f, sort=sort, companies=companies, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
     cart = store.cart(g.customer["customer_id"])
     args = {k: v for k, v in {**f, "sort": sort if sort != "default" else None}.items() if v}
     return render_template("catalog.html", customer=g.customer, curated=curated, items=items,
-                           facets=store.facets(brand=f["brand"], category=f["category"]),
+                           facets=store.facets(brand=f["brand"], category=f["category"], companies=companies),
                            brand=f["brand"], category=f["category"], subcategory=f["subcategory"], discount=f["discount"],
                            q=f["q"] or "", sort=sort, page=page, pages=pages, total=total, filtered=filtered,
                            page_args=args, cart_count=sum(cart.values()))
@@ -126,7 +128,7 @@ def home():
 @bp.get("/item/<sku>")
 @login_required
 def item(sku: str):
-    p = _ctx().store.product(sku)
+    p = _ctx().store.product(sku, companies=g.customer["companies"])
     if not p:
         abort(404)
     cart = _ctx().store.cart(g.customer["customer_id"])
@@ -164,7 +166,7 @@ def _snap_qty(qty: int, case_pack: int, available: int) -> int:
 def cart_add():
     store = _ctx().store
     sku = (request.form.get("sku") or "").strip()
-    p = store.product(sku)
+    p = store.product(sku, companies=g.customer["companies"])
     if not p:
         abort(404)
     try:
@@ -220,10 +222,25 @@ def _priced_cart(store, customer_id: str) -> tuple[list[dict[str, Any]], float]:
         ext = round(q * float(p["closeout_price"]), 2)
         total += ext
         lines.append({"sku": sku, "description": p["description"], "qty": q, "case_pack": p["case_pack"],
-                      "order_unit": p["order_unit"], "unit_label": p["unit_label"],
+                      "company": p["company"] or g.customer["companies"][0], "order_unit": p["order_unit"], "unit_label": p["unit_label"],
                       "unit_price": float(p["closeout_price"]), "wholesale": float(p["wholesale"]), "extended": ext,
                       "image_url": p["image_url"], "ship_by": p["ship_by"]})
     return lines, round(total, 2)
+
+
+def _company_groups(lines: list[dict[str, Any]], min_total: float) -> list[dict[str, Any]]:
+    """One order per company: each subsidiary gets its own sales order in
+    NetSuite, so the minimum applies per company and the buyer sees the split."""
+    groups: dict[str, dict[str, Any]] = {}
+    for l in lines:
+        gp = groups.setdefault(l["company"], {"company": l["company"], "label": COMPANY_LABELS.get(l["company"], l["company"]),
+                                              "lines": [], "total": 0.0})
+        gp["lines"].append(l)
+        gp["total"] = round(gp["total"] + l["extended"], 2)
+    out = list(groups.values())
+    for gp in out:
+        gp["short"] = round(max(min_total - gp["total"], 0.0), 2)
+    return out
 
 
 @bp.get("/cart")
@@ -231,8 +248,9 @@ def _priced_cart(store, customer_id: str) -> tuple[list[dict[str, Any]], float]:
 def cart():
     lines, total = _priced_cart(_ctx().store, g.customer["customer_id"])
     min_total = float(_ctx().cfg.min_order_total or 0)
-    return render_template("cart.html", customer=g.customer, lines=lines, total=total, min_total=min_total,
-                           short=round(max(min_total - total, 0.0), 2), cart_count=sum(l["qty"] for l in lines))
+    groups = _company_groups(lines, min_total)
+    return render_template("cart.html", customer=g.customer, lines=lines, total=total, min_total=min_total, groups=groups,
+                           short=round(sum(gp["short"] for gp in groups), 2), cart_count=sum(l["qty"] for l in lines))
 
 
 @bp.post("/checkout")
@@ -244,22 +262,32 @@ def checkout():
         flash("Your cart is empty.")
         return redirect(url_for("shop.cart"))
     min_total = float(_ctx().cfg.min_order_total or 0)
-    if total < min_total:
-        flash(f"Orders must total at least ${min_total:,.0f}. Add ${min_total - total:,.2f} more.")
+    groups = _company_groups(lines, min_total)
+    short = [gp for gp in groups if gp["short"] > 0]
+    if short:
+        flash("Each company's order must total at least ${:,.0f}: ".format(min_total)
+              + "; ".join(f"add ${gp['short']:,.2f} more of {gp['label']} product" for gp in short) + ".")
         return redirect(url_for("shop.cart"))
-    order = {
-        "customer_id": g.customer["customer_id"],
-        "company_name": g.customer["company_name"],
-        "buyer_class": g.customer["buyer_class"],
-        "po_number": (request.form.get("po_number") or "").strip()[:40],
-        "notes": (request.form.get("notes") or "").strip()[:1000],
-        "requested_ship_date": "",        # closeouts ship at once; the form no longer asks
-        "lines": [{"sku": l["sku"], "qty": l["qty"], "unit_price": l["unit_price"]} for l in lines],
-        "total": total,
-    }
-    oid = store.enqueue("order", order, customer_id=g.customer["customer_id"])
+    po = (request.form.get("po_number") or "").strip()[:40]
+    notes = (request.form.get("notes") or "").strip()[:1000]
+    orders = []
+    for gp in groups:
+        order = {
+            "customer_id": g.customer["accounts"].get(gp["company"], g.customer["customer_id"]),  # this company's record
+            "login_customer_id": g.customer["customer_id"],
+            "company": gp["company"],
+            "company_name": g.customer["company_name"],
+            "buyer_class": g.customer["buyer_class"],
+            "po_number": po,
+            "notes": notes,
+            "requested_ship_date": "",        # closeouts ship at once; the form no longer asks
+            "lines": [{"sku": l["sku"], "qty": l["qty"], "unit_price": l["unit_price"]} for l in gp["lines"]],
+            "total": gp["total"],
+        }
+        oid = store.enqueue("order", order, customer_id=g.customer["customer_id"])
+        orders.append({"ref": oid, "label": gp["label"], "order": order})
     store.set_cart(g.customer["customer_id"], {})
-    return render_template("confirm.html", customer=g.customer, order=order, ref=oid, cart_count=0)
+    return render_template("confirm.html", customer=g.customer, orders=orders, cart_count=0)
 
 
 @bp.get("/orders")

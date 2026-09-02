@@ -25,6 +25,7 @@ products = sa.Table(
     sa.Column("brand", sa.String(80), default=""),
     sa.Column("category", sa.String(120), default=""),
     sa.Column("subcategory", sa.String(120), default=""),
+    sa.Column("company", sa.String(20), nullable=False, default=""),   # gerson | park_hill ("" = any)
     sa.Column("season", sa.String(80), default=""),
     sa.Column("case_pack", sa.Integer, nullable=False, default=1),
     sa.Column("master_pack", sa.Integer, nullable=False, default=0),   # units per master carton (0 = unknown)
@@ -51,6 +52,7 @@ customers = sa.Table(
     sa.Column("volume_tier", sa.String(20), default=""),
     sa.Column("rep_name", sa.String(120), default=""),
     sa.Column("house_account", sa.Boolean, nullable=False, default=False),
+    sa.Column("accounts_json", sa.Text, nullable=False, default="{}"),   # {company: customer id in that subsidiary}
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
@@ -172,6 +174,7 @@ class Store:
                 "description": str(it.get("description") or it["sku"]), "image_url": str(it.get("image_url") or ""),
                 "brand": str(it.get("brand") or ""), "category": str(it.get("category") or ""),
                 "subcategory": str(it.get("subcategory") or ""), "season": str(it.get("season") or ""),
+                "company": str(it.get("company") or ""),
                 "case_pack": max(int(it.get("case_pack") or 1), 1), "upc": str(it.get("upc") or ""),
                 "master_pack": max(int(float(it.get("master_pack") or 0)), 0), "inner_pack": max(int(float(it.get("inner_pack") or 0)), 0),
                 "wholesale": float(it.get("wholesale") or 0), "closeout_price": float(it.get("closeout_price") or 0),
@@ -197,6 +200,7 @@ class Store:
                 "company_name": str(it.get("company_name") or cid),
                 "buyer_class": str(it.get("buyer_class") or "independent"), "volume_tier": str(it.get("volume_tier") or ""),
                 "rep_name": str(it.get("rep_name") or ""), "house_account": bool(it.get("house_account")),
+                "accounts_json": json.dumps({str(k): str(v) for k, v in (it.get("accounts") or {}).items()}, sort_keys=True),
                 "active": True, "updated_at": now,
             })
             for e in it.get("emails") or []:
@@ -243,12 +247,12 @@ class Store:
                 sa.select(customers).join(customer_emails, customer_emails.c.customer_id == customers.c.customer_id)
                 .where(customer_emails.c.email == e, customers.c.active.is_(True))
             ).mappings().first()
-        return dict(row) if row else None
+        return _cust(row) if row else None
 
     def customer(self, customer_id: str) -> dict[str, Any] | None:
         with self.engine.connect() as conn:
             row = conn.execute(sa.select(customers).where(customers.c.customer_id == str(customer_id))).mappings().first()
-        return dict(row) if row and row["active"] else None
+        return _cust(row) if row and row["active"] else None
 
     def create_login_token(self, email: str, customer_id: str, minutes: int) -> str:
         token = secrets.token_urlsafe(32)
@@ -270,10 +274,15 @@ class Store:
 
     # --- catalog ------------------------------------------------------------
 
-    def product(self, sku: str) -> dict[str, Any] | None:
+    def product(self, sku: str, companies: Iterable[str] | None = None) -> dict[str, Any] | None:
         with self.engine.connect() as conn:
             row = conn.execute(sa.select(products).where(products.c.sku == sku, products.c.active.is_(True))).mappings().first()
-        return _prod(row) if row else None
+        if not row:
+            return None
+        p = _prod(row)
+        if companies is not None and p["company"] and p["company"] not in set(companies):
+            return None                                  # not sold by any company this buyer is set up with
+        return p
 
     def products_by_skus(self, skus: Iterable[str]) -> dict[str, dict[str, Any]]:
         wanted = [str(s) for s in skus]
@@ -293,10 +302,13 @@ class Store:
     }
 
     @staticmethod
-    def _product_filter(*, brand=None, category=None, subcategory=None, discount=None, q=None):
+    def _product_filter(*, brand=None, category=None, subcategory=None, discount=None, q=None, companies=None):
         """Every word of ``q`` must appear somewhere in SKU, description, brand,
-        category or subcategory; ``discount`` is the exact ladder tier (20/33/50)."""
+        category or subcategory; ``discount`` is the exact ladder tier (20/33/50);
+        ``companies`` limits to the subsidiaries the buyer holds an account with."""
         conds = [products.c.active.is_(True), products.c.qty_available > 0]
+        if companies is not None:
+            conds.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
         if brand:
             conds.append(products.c.brand == brand)
         if category:
@@ -316,24 +328,28 @@ class Store:
 
     def list_products(self, *, brand: str | None = None, category: str | None = None, subcategory: str | None = None,
                       discount: Any = None, q: str | None = None, sort: str = "default",
-                      limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+                      companies: Iterable[str] | None = None, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
-                                                                discount=discount, q=q))
+                                                                discount=discount, q=q, companies=companies))
         stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
 
     def count_products(self, *, brand: str | None = None, category: str | None = None, subcategory: str | None = None,
-                       discount: Any = None, q: str | None = None) -> int:
+                       discount: Any = None, q: str | None = None, companies: Iterable[str] | None = None) -> int:
         stmt = sa.select(sa.func.count()).select_from(products).where(
-            *self._product_filter(brand=brand, category=category, subcategory=subcategory, discount=discount, q=q))
+            *self._product_filter(brand=brand, category=category, subcategory=subcategory, discount=discount, q=q,
+                                  companies=companies))
         with self.engine.connect() as conn:
             return int(conn.execute(stmt).scalar() or 0)
 
-    def facets(self, *, brand: str | None = None, category: str | None = None) -> dict[str, list[Any]]:
+    def facets(self, *, brand: str | None = None, category: str | None = None,
+               companies: Iterable[str] | None = None) -> dict[str, list[Any]]:
         """Filter choices that still return something: categories narrow to the
         chosen brand, subcategories and discount tiers to brand + category."""
         base = [products.c.active.is_(True), products.c.qty_available > 0]
+        if companies is not None:
+            base.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
         in_brand = base + ([products.c.brand == brand] if brand else [])
         in_cat = in_brand + ([products.c.category == category] if category else [])
 
@@ -348,14 +364,16 @@ class Store:
                 "subcategories": distinct(products.c.subcategory, in_cat),
                 "discounts": distinct(products.c.discount_pct, in_cat, desc=True)}
 
-    def curated_for(self, customer_id: str, limit: int = 24) -> list[dict[str, Any]]:
+    def curated_for(self, customer_id: str, limit: int = 24, companies: Iterable[str] | None = None) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
             row = conn.execute(sa.select(curation.c.skus_json).where(curation.c.customer_id == str(customer_id))).first()
         if not row:
             return []
         skus = json.loads(row[0])[:limit]
         by = self.products_by_skus(skus)
-        return [by[s] for s in skus if s in by and by[s]["qty_available"] > 0]
+        allowed = set(companies) if companies is not None else None
+        return [by[s] for s in skus if s in by and by[s]["qty_available"] > 0
+                and (allowed is None or not by[s]["company"] or by[s]["company"] in allowed)]
 
     # --- images -------------------------------------------------------------
 
@@ -451,6 +469,26 @@ def _prod(r) -> dict[str, Any]:
     return d
 
 
+COMPANY_LABELS = {"gerson": "Gerson", "park_hill": "Park Hill"}
+ALL_COMPANIES = tuple(COMPANY_LABELS)
+
+
+def _cust(row) -> dict[str, Any]:
+    """Customer row with ``accounts`` ({company: customer id}) and ``companies``
+    (which subsidiaries' products they may buy).  A feed without accounts -
+    an older AOI - means every company under the login id."""
+    d = dict(row)
+    try:
+        accounts = {str(k): str(v) for k, v in (json.loads(d.get("accounts_json") or "{}") or {}).items()}
+    except (TypeError, ValueError):
+        accounts = {}
+    if not accounts:
+        accounts = {c: d["customer_id"] for c in ALL_COMPANIES}
+    d["accounts"] = accounts
+    d["companies"] = [c for c in ALL_COMPANIES if c in accounts] or list(accounts)
+    return d
+
+
 def order_unit(p: Mapping[str, Any]) -> tuple[int, str]:
     """How many units one click buys.  Whole master cartons while at least one
     is left; then inner packs; then the NetSuite minimum (JJ, 2026-09-02)."""
@@ -469,9 +507,12 @@ def _ensure_columns(eng: Engine) -> None:
     """Add columns introduced after a table already existed (create_all never
     alters).  Idempotent; SQLite and Postgres both accept plain ADD COLUMN."""
     insp = sa.inspect(eng)
-    have = {c["name"] for c in insp.get_columns("products")}
-    wanted = {"master_pack": "INTEGER NOT NULL DEFAULT 0", "inner_pack": "INTEGER NOT NULL DEFAULT 0"}
+    wanted = {"products": {"master_pack": "INTEGER NOT NULL DEFAULT 0", "inner_pack": "INTEGER NOT NULL DEFAULT 0",
+                           "company": "VARCHAR(20) NOT NULL DEFAULT ''"},
+              "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'"}}
     with eng.begin() as conn:
-        for name, ddl in wanted.items():
-            if name not in have:
-                conn.execute(sa.text(f"ALTER TABLE products ADD COLUMN {name} {ddl}"))
+        for table, cols in wanted.items():
+            have = {c["name"] for c in insp.get_columns(table)}
+            for name, ddl in cols.items():
+                if name not in have:
+                    conn.execute(sa.text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
