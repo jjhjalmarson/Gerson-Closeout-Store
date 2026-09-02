@@ -182,6 +182,26 @@ class CatalogAndCartTest(StoreTestCase):
         self.assertEqual(self.client.get("/item/NOPE").status_code, 404)
         self.assertIn("UPC 1", self.client.get("/item/L1").get_data(as_text=True))
 
+    def test_filters_search_and_paging(self):
+        html = self.client.get("/?discount=70").get_data(as_text=True)
+        self.assertIn("T2", html); self.assertNotIn("L1", html)                    # exact ladder tier
+        html = self.client.get("/?q=park+tree").get_data(as_text=True)              # every word, any field
+        self.assertIn("T2", html); self.assertNotIn(">L1<", html)
+        self.assertIn("Nothing matches", self.client.get("/?q=park+lantern").get_data(as_text=True))
+        f = self.store.facets(brand="Park Hill Collection")
+        self.assertEqual((f["categories"], f["discounts"]), (["Decor"], [70]))      # narrowed to the brand
+        self.assertEqual(self.store.count_products(brand="Fall/Holiday"), 1)
+        # paging: 60 per page, next/previous links carry the filters
+        from store import shop
+        skus = [{**CATALOG["items"][0], "sku": f"P{i:03d}", "internal_id": str(100 + i)} for i in range(shop.PAGE_SIZE + 5)]
+        self.ingest("catalog", {**CATALOG, "items": CATALOG["items"] + skus})
+        html = self.client.get("/?brand=Fall%2FHoliday").get_data(as_text=True)
+        self.assertIn("page 1 of 2", html); self.assertIn("page=2", html)
+        html2 = self.client.get("/?brand=Fall%2FHoliday&page=2").get_data(as_text=True)
+        self.assertIn("Previous", html2); self.assertNotIn("Next", html2)
+        self.assertEqual(self.client.get("/?page=99").status_code, 200)             # clamps, no error
+        self.assertEqual([p["sku"] for p in self.store.list_products(sort="discount", limit=1)], ["T2"])
+
     def test_cart_snaps_to_cases_and_caps_at_available(self):
         self.client.post("/cart/add", data={"sku": "L1", "qty": "7"})       # -> 6
         self.assertEqual(self.store.cart("26003"), {"L1": 6})

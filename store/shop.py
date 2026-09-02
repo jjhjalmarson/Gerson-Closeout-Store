@@ -15,6 +15,7 @@ from flask import (Blueprint, abort, current_app, flash, g, redirect, render_tem
 from . import mail
 
 bp = Blueprint("shop", __name__)
+PAGE_SIZE = 60
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -97,14 +98,29 @@ def apply_post():
 @login_required
 def home():
     store = _ctx().store
-    brand = request.args.get("brand") or None
-    category = request.args.get("category") or None
-    q = request.args.get("q") or None
-    curated = store.curated_for(g.customer["customer_id"]) if not (brand or category or q) else []
-    items = store.list_products(brand=brand, category=category, q=q, limit=240)
+    a = request.args
+    f = {"brand": a.get("brand") or None, "category": a.get("category") or None,
+         "subcategory": a.get("subcategory") or None, "discount": a.get("discount") or None, "q": (a.get("q") or "").strip() or None}
+    sort = a.get("sort") or "default"
+    if sort not in store.SORTS:
+        sort = "default"
+    try:
+        page = max(int(a.get("page") or 1), 1)
+    except ValueError:
+        page = 1
+    filtered = any(f.values())
+    curated = store.curated_for(g.customer["customer_id"]) if not filtered and page == 1 else []
+    total = store.count_products(**f)
+    pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
+    page = min(page, pages)
+    items = store.list_products(**f, sort=sort, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
     cart = store.cart(g.customer["customer_id"])
-    return render_template("catalog.html", customer=g.customer, curated=curated, items=items, facets=store.facets(),
-                           brand=brand, category=category, q=q or "", cart_count=sum(cart.values()))
+    args = {k: v for k, v in {**f, "sort": sort if sort != "default" else None}.items() if v}
+    return render_template("catalog.html", customer=g.customer, curated=curated, items=items,
+                           facets=store.facets(brand=f["brand"], category=f["category"]),
+                           brand=f["brand"], category=f["category"], subcategory=f["subcategory"], discount=f["discount"],
+                           q=f["q"] or "", sort=sort, page=page, pages=pages, total=total, filtered=filtered,
+                           page_args=args, cart_count=sum(cart.values()))
 
 
 @bp.get("/item/<sku>")

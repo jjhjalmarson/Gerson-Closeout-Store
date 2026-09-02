@@ -279,27 +279,70 @@ class Store:
             rows = conn.execute(sa.select(products).where(products.c.sku.in_(wanted), products.c.active.is_(True))).mappings().all()
         return {r["sku"]: _prod(r) for r in rows}
 
-    def list_products(self, *, brand: str | None = None, category: str | None = None, q: str | None = None,
-                      limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
-        stmt = sa.select(products).where(products.c.active.is_(True), products.c.qty_available > 0)
+    SORTS = {
+        "default": (products.c.brand, products.c.category, products.c.sku),
+        "discount": (products.c.discount_pct.desc(), products.c.brand, products.c.sku),
+        "price_asc": (products.c.closeout_price.asc(), products.c.sku),
+        "price_desc": (products.c.closeout_price.desc(), products.c.sku),
+        "qty": (products.c.qty_available.desc(), products.c.sku),
+        "step": (sa.case((products.c.next_step_date.is_(None), 1), else_=0), products.c.next_step_date, products.c.sku),
+    }
+
+    @staticmethod
+    def _product_filter(*, brand=None, category=None, subcategory=None, discount=None, q=None):
+        """Every word of ``q`` must appear somewhere in SKU, description, brand,
+        category or subcategory; ``discount`` is the exact ladder tier (20/33/50)."""
+        conds = [products.c.active.is_(True), products.c.qty_available > 0]
         if brand:
-            stmt = stmt.where(products.c.brand == brand)
+            conds.append(products.c.brand == brand)
         if category:
-            stmt = stmt.where(products.c.category == category)
-        if q:
-            like = f"%{q.strip()}%"
-            stmt = stmt.where(sa.or_(products.c.sku.ilike(like), products.c.description.ilike(like)))
-        stmt = stmt.order_by(products.c.brand, products.c.category, products.c.sku).limit(limit).offset(offset)
+            conds.append(products.c.category == category)
+        if subcategory:
+            conds.append(products.c.subcategory == subcategory)
+        if discount is not None and str(discount).strip():
+            try:
+                conds.append(products.c.discount_pct == int(str(discount).strip().rstrip("%")))
+            except ValueError:
+                pass
+        for word in (q or "").split():
+            like = f"%{word}%"
+            conds.append(sa.or_(products.c.sku.ilike(like), products.c.description.ilike(like), products.c.brand.ilike(like),
+                                products.c.category.ilike(like), products.c.subcategory.ilike(like)))
+        return conds
+
+    def list_products(self, *, brand: str | None = None, category: str | None = None, subcategory: str | None = None,
+                      discount: Any = None, q: str | None = None, sort: str = "default",
+                      limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+        stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
+                                                                discount=discount, q=q))
+        stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
 
-    def facets(self) -> dict[str, list[str]]:
+    def count_products(self, *, brand: str | None = None, category: str | None = None, subcategory: str | None = None,
+                       discount: Any = None, q: str | None = None) -> int:
+        stmt = sa.select(sa.func.count()).select_from(products).where(
+            *self._product_filter(brand=brand, category=category, subcategory=subcategory, discount=discount, q=q))
         with self.engine.connect() as conn:
-            brands = [r[0] for r in conn.execute(sa.select(products.c.brand).where(products.c.active.is_(True), products.c.qty_available > 0)
-                                                 .distinct().order_by(products.c.brand)) if r[0]]
-            cats = [r[0] for r in conn.execute(sa.select(products.c.category).where(products.c.active.is_(True), products.c.qty_available > 0)
-                                               .distinct().order_by(products.c.category)) if r[0]]
-        return {"brands": brands, "categories": cats}
+            return int(conn.execute(stmt).scalar() or 0)
+
+    def facets(self, *, brand: str | None = None, category: str | None = None) -> dict[str, list[Any]]:
+        """Filter choices that still return something: categories narrow to the
+        chosen brand, subcategories and discount tiers to brand + category."""
+        base = [products.c.active.is_(True), products.c.qty_available > 0]
+        in_brand = base + ([products.c.brand == brand] if brand else [])
+        in_cat = in_brand + ([products.c.category == category] if category else [])
+
+        def distinct(col, conds, desc=False):
+            order = col.desc() if desc else col
+            stmt = sa.select(col).where(*conds).distinct().order_by(order)
+            with self.engine.connect() as conn:
+                return [r[0] for r in conn.execute(stmt) if r[0] not in (None, "")]
+
+        return {"brands": distinct(products.c.brand, base),
+                "categories": distinct(products.c.category, in_brand),
+                "subcategories": distinct(products.c.subcategory, in_cat),
+                "discounts": distinct(products.c.discount_pct, in_cat, desc=True)}
 
     def curated_for(self, customer_id: str, limit: int = 24) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:

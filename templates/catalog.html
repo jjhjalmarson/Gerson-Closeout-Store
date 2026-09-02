@@ -2,12 +2,27 @@
 {% block body %}
 <h1>Closeouts</h1>
 <p class="muted">Prices step down on a published schedule and quantities are approximate. Orders ship in full cases; your Gerson rep is credited as usual.</p>
-<form method="get" class="bar">
-  <select name="brand"><option value="">All brands</option>{% for b in facets.brands %}<option value="{{ b }}" {% if b==brand %}selected{% endif %}>{{ b }}</option>{% endfor %}</select>
-  <select name="category"><option value="">All categories</option>{% for c in facets.categories %}<option value="{{ c }}" {% if c==category %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
-  <input name="q" placeholder="Search SKU or description" value="{{ q }}">
-  <button type="submit" class="sec">Filter</button>
-  {% if brand or category or q %}<a class="btn sec" href="{{ url_for('shop.home') }}">Clear</a>{% endif %}
+<form method="get" class="bar" id="filters">
+  <select name="brand" onchange="this.form.category.value='';this.form.subcategory.value='';this.form.submit()">
+    <option value="">All brands</option>{% for b in facets.brands %}<option value="{{ b }}" {% if b==brand %}selected{% endif %}>{{ b }}</option>{% endfor %}</select>
+  <select name="category" onchange="this.form.subcategory.value='';this.form.submit()">
+    <option value="">All categories</option>{% for c in facets.categories %}<option value="{{ c }}" {% if c==category %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  <select name="subcategory" onchange="this.form.submit()" {% if facets.subcategories|length < 2 and not subcategory %}style="display:none"{% endif %}>
+    <option value="">All subcategories</option>{% for c in facets.subcategories %}<option value="{{ c }}" {% if c==subcategory %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+  <select name="discount" onchange="this.form.submit()">
+    <option value="">Any % off</option>{% for d in facets.discounts %}<option value="{{ d }}" {% if discount and d|string==discount|string %}selected{% endif %}>{{ d }}% off</option>{% endfor %}</select>
+  <select name="sort" onchange="this.form.submit()">
+    <option value="" {% if sort=='default' %}selected{% endif %}>Brand / category</option>
+    <option value="discount" {% if sort=='discount' %}selected{% endif %}>Biggest % off</option>
+    <option value="price_asc" {% if sort=='price_asc' %}selected{% endif %}>Price: low to high</option>
+    <option value="price_desc" {% if sort=='price_desc' %}selected{% endif %}>Price: high to low</option>
+    <option value="qty" {% if sort=='qty' %}selected{% endif %}>Most available</option>
+    <option value="step" {% if sort=='step' %}selected{% endif %}>Dropping soonest</option>
+  </select>
+  <input name="q" placeholder="Search: any words in SKU, description, brand, category" value="{{ q }}" style="min-width:18rem">
+  <button type="submit" class="sec">Search</button>
+  {% if filtered or sort!='default' %}<a class="btn sec" href="{{ url_for('shop.home') }}">Clear</a>{% endif %}
+  <span class="muted" style="margin-left:auto">{{ total }} item{{ '' if total==1 else 's' }}{% if pages > 1 %} · page {{ page }} of {{ pages }}{% endif %}</span>
 </form>
 {% if curated %}
 <h2>Picked for {{ customer.company_name }} <span class="pill">based on what you buy</span></h2>
@@ -16,5 +31,12 @@
 {% endif %}
 {% if items %}
 <div class="grid">{% for p in items %}{% include "_card.html" %}{% endfor %}</div>
+{% if pages > 1 %}
+<nav class="bar" style="justify-content:center">
+  {% if page > 1 %}<a class="btn sec" href="{{ url_for('shop.home', page=page-1, **page_args) }}">&larr; Previous</a>{% endif %}
+  <span class="muted">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a class="btn sec" href="{{ url_for('shop.home', page=page+1, **page_args) }}">Next &rarr;</a>{% endif %}
+</nav>
+{% endif %}
 {% else %}<p class="muted">Nothing matches that filter.</p>{% endif %}
 {% endblock %}
