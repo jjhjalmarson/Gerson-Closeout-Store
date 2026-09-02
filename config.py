@@ -37,6 +37,15 @@ class Config:
     # The public SuiteCommerce site independents are sent to (shown on the sign-in page).
     website_url: str = ""
 
+    # Who runs the buyer admin portal (/admin): comma-separated emails. They sign
+    # in with the same one-time link as buyers. JJ, 2026-09-02: buyers are
+    # approved here, not maintained in AOI, and never tied to a NetSuite record.
+    admin_emails: str = ""
+
+    @property
+    def admin_list(self) -> list[str]:
+        return [e.strip().lower() for e in self.admin_emails.replace(";", ",").split(",") if e.strip()]
+
     @property
     def offer_notify_list(self) -> list[str]:
         return [e.strip() for e in self.offer_notify_emails.replace(";", ",").split(",") if e.strip()]
@@ -71,4 +80,5 @@ def load_config() -> Config:
         min_order_total=float(_env("MIN_ORDER_TOTAL", "300") or 300),
         offer_notify_emails=_env("OFFER_NOTIFY_EMAILS"),
         website_url=_env("WEBSITE_URL").rstrip("/"),
+        admin_emails=_env("STORE_ADMIN_EMAILS"),
     )

@@ -36,13 +36,19 @@
 <body>
 <header>
   <span class="brand">Gerson Closeout Offers</span>
-  {% if buyer %}
+  {% if session.get('admin_email') and not buyer %}
+  <span class="muted">{{ session.get('admin_email') }}</span>
+  <nav>
+    <a href="{{ url_for('admin.home') }}"><b>Buyer admin</b></a>
+    <form method="post" action="{{ url_for('shop.logout') }}" style="margin:0"><button class="sec" type="submit">Sign out</button></form>
+  </nav>
+  {% elif buyer %}
   <span class="muted">{{ buyer.name }}{% if buyer.rep_name %} · your rep: {{ buyer.rep_name }}{% endif %}</span>
   <nav>
     <a href="{{ url_for('shop.home') }}">Offer sheet</a>
     <a href="{{ url_for('shop.offer') }}"><b>Review offer{% if draft_count %} ({{ draft_count }}){% endif %}</b></a>
     <a href="{{ url_for('shop.offers') }}">Submitted</a>
-    <form method="post" action="{{ url_for('shop.logout') }}" style="margin:0"><button class="sec" type="submit">{{ 'Sign out' if buyer.kind == 'customer' else 'Leave' }}</button></form>
+    <form method="post" action="{{ url_for('shop.logout') }}" style="margin:0"><button class="sec" type="submit">{{ 'Leave' if buyer.kind == 'invite' else 'Sign out' }}</button></form>
   </nav>
   {% endif %}
 </header>

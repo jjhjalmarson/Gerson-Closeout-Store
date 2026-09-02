@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Sign up · Gerson Closeout Offers{% endblock %}
+{% block body %}
+<div class="login" style="max-width:640px">
+  {% if submitted %}
+    <h1>Thank you</h1>
+    <p>Your request is with the Gerson closeout team. Once it is approved you will get an email with a sign-in link; from then on you sign in with <b>{{ email }}</b>.</p>
+  {% elif invalid %}
+    <h1>Invitation not valid</h1>
+    <p class="muted">This sign-up link was already used or has been withdrawn. Ask your Gerson contact for a new one.</p>
+  {% else %}
+  {% set f = form or {} %}
+  <h1>Sign up for the closeout offer sheet</h1>
+  <p class="muted">Approved buyers see every closeout item at original wholesale and make offers by the case. Tell us who you are; the Gerson team approves accounts by hand.</p>
+  <form method="post">
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <label>Company *<br><input name="company" required value="{{ f.company or '' }}" style="width:100%"></label>
+      <label>Your name *<br><input name="contact" required value="{{ f.contact or '' }}" style="width:100%"></label>
+      <label>Email *<br><input type="email" name="email" required value="{{ f.email or '' }}" style="width:100%" {% if lock_email %}readonly{% endif %}></label>
+      <label>Phone<br><input name="phone" value="{{ f.phone or '' }}" style="width:100%"></label>
+    </div>
+    <label style="display:block;margin-top:.6rem">Anything we should know <span class="muted">(stores, regions, categories you buy)</span><br><textarea name="notes" rows="3" maxlength="2000" style="width:100%">{{ f.notes or '' }}</textarea></label>
+    <div style="margin-top:.8rem"><button type="submit">Request access</button></div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

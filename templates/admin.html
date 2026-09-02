@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Admin · Gerson Closeout Offers{% endblock %}
+{% block body %}
+<h1>Buyer admin <span class="muted" style="font-weight:normal">· signed in as {{ admin_email }}</span></h1>
+<p class="muted">Invite buyers by email, approve the ones who sign up, suspend anyone who should no longer see the sheet. Approved buyers sign in with a one-time link sent to their email. Nothing here touches NetSuite.</p>
+
+<h2>Invite a buyer</h2>
+<form method="post" action="{{ url_for('admin.invite') }}" class="bar">
+  <label>Email *<input type="email" name="email" required style="width:16rem"></label>
+  <label>Company<input name="company" style="width:14rem"></label>
+  <label>Note to them<input name="note" style="width:18rem" placeholder="optional line in the email"></label>
+  <button type="submit">Send invitation</button>
+</form>
+
+<h2>Waiting for approval <span class="pill">{{ pending|length }}</span></h2>
+{% if not pending %}<p class="muted">Nobody is waiting.</p>{% else %}
+<table>
+  <tr><th>Company</th><th>Contact</th><th>Email</th><th>Phone</th><th>Notes</th><th>Signed up</th><th></th></tr>
+  {% for b in pending %}
+  <tr>
+    <td><b>{{ b.company }}</b></td><td>{{ b.contact }}</td><td>{{ b.email }}</td><td>{{ b.phone }}</td><td class="muted">{{ b.notes }}</td><td class="muted">{{ b.created_at[:16] }}{% if b.invite_token %} · invited{% endif %}</td>
+    <td><form method="post" action="{{ url_for('admin.set_status', buyer_id=b.id) }}" style="display:inline"><button name="status" value="approved">Approve</button> <button name="status" value="declined" class="sec">Decline</button></form></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Buyers <span class="pill">{{ buyers|length }}</span></h2>
+{% if not buyers %}<p class="muted">No approved buyers yet.</p>{% else %}
+<table>
+  <tr><th>Company</th><th>Contact</th><th>Email</th><th>Status</th><th>Offers</th><th>Approved</th><th></th></tr>
+  {% for b in buyers %}
+  <tr>
+    <td><b>{{ b.company }}</b></td><td>{{ b.contact }}</td><td>{{ b.email }}</td><td>{{ b.status }}</td><td>{{ b.offers }}</td><td class="muted">{{ (b.approved_at or '')[:10] }} {{ b.approved_by or '' }}</td>
+    <td><form method="post" action="{{ url_for('admin.set_status', buyer_id=b.id) }}" style="display:inline">
+      {% if b.status == 'approved' %}<button name="status" value="suspended" class="sec">Suspend</button>{% else %}<button name="status" value="approved">Reactivate</button>{% endif %}</form></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Invitations sent <span class="pill">{{ invites|length }}</span></h2>
+{% if not invites %}<p class="muted">None yet.</p>{% else %}
+<table>
+  <tr><th>Email</th><th>Company</th><th>Sent</th><th>By</th><th>Status</th><th></th></tr>
+  {% for i in invites %}
+  <tr><td>{{ i.email }}</td><td>{{ i.company }}</td><td class="muted">{{ i.created_at[:16] }}</td><td class="muted">{{ i.created_by }}</td>
+    <td>{% if i.used_at %}signed up {{ i.used_at[:10] }}{% elif i.revoked_at %}withdrawn{% else %}open{% endif %}</td>
+    <td>{% if not i.used_at and not i.revoked_at %}<form method="post" action="{{ url_for('admin.revoke_invite', token=i.token) }}" style="display:inline"><button class="sec">Withdraw</button></form>
+        <form method="post" action="{{ url_for('admin.resend_invite', token=i.token) }}" style="display:inline"><button class="sec">Resend</button></form>{% endif %}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}
