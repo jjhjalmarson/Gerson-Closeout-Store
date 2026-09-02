@@ -133,9 +133,13 @@ def _upsert(conn, table: sa.Table, rows: list[dict[str, Any]], key: str) -> None
         from sqlalchemy.dialects.postgresql import insert
     else:
         from sqlalchemy.dialects.sqlite import insert
-    stmt = insert(table).values(rows)
-    update_cols = {c.name: getattr(stmt.excluded, c.name) for c in table.columns if c.name != key}
-    conn.execute(stmt.on_conflict_do_update(index_elements=[key], set_=update_cols))
+    # SQLite caps bound variables per statement (999 on older builds); the
+    # catalog is ~6,000 rows x 20 columns, so upsert in chunks.
+    step = 300
+    for i in range(0, len(rows), step):
+        stmt = insert(table).values(rows[i:i + step])
+        update_cols = {c.name: getattr(stmt.excluded, c.name) for c in table.columns if c.name != key}
+        conn.execute(stmt.on_conflict_do_update(index_elements=[key], set_=update_cols))
 
 
 class Store:
