@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Answer sent · OF-{{ offer.id }}{% endblock %}
+{% block body %}
+{% if action == 'accept' %}
+<h1>Accepted — thank you</h1>
+<p class="muted">Your acceptance of round {{ rnd.round_no }} on offer OF-{{ offer.id }} is on its way to the Gerson closeout team. They will enter the order and confirm by email.</p>
+{% elif action == 'counter' %}
+<h1>Counter sent</h1>
+<p class="muted">Your counter on offer OF-{{ offer.id }} reached the Gerson closeout team; they will answer by email.</p>
+<table><tr><th>SKU</th><th class="right">Qty</th><th class="right">Your price</th><th class="right">Extended</th></tr>
+{% for l in lines %}<tr><td>{{ l.sku }}{% if l.description %} <span class="muted">{{ l.description }}</span>{% endif %}</td><td class="right">{{ l.qty }}</td><td class="right">${{ '%.2f'|format(l.price) }}</td><td class="right">${{ '%.2f'|format(l.qty * l.price) }}</td></tr>{% endfor %}
+</table>
+{% else %}
+<h1>Offer closed</h1>
+<p class="muted">You declined round {{ rnd.round_no }} on offer OF-{{ offer.id }}. You are welcome to submit a new offer from the sheet at any time.</p>
+{% endif %}
+{% if message %}<p class="muted">Your message: “{{ message }}”</p>{% endif %}
+<p><a class="btn sec" href="{{ url_for('shop.round_view', token=rnd.token) }}">View the trail</a></p>
+{% endblock %}

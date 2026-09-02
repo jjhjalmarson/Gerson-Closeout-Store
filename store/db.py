@@ -119,6 +119,29 @@ outbox = sa.Table(
     sa.Column("result_json", sa.Text),
 )
 
+# Negotiation rounds pushed by AOI (leadership 2026-09-02, shape borrowed from the
+# purchasing app's vendor rounds): one token per round. The buyer opens /o/<token>,
+# sees the trail, and accepts / counters / declines; the answer goes to the outbox
+# as offer_response. Only price, quantity and the message ever arrive here.
+rounds = sa.Table(
+    "rounds", metadata,
+    sa.Column("token", sa.String(64), primary_key=True),
+    sa.Column("offer_id", sa.Integer, nullable=False, index=True),      # the buyer's original outbox item
+    sa.Column("round_id", sa.Integer, nullable=False),                  # AOI's id for the round
+    sa.Column("round_no", sa.Integer, nullable=False),
+    sa.Column("kind", sa.String(20), nullable=False),                   # counter | accept | decline | recorded
+    sa.Column("thread_status", sa.String(20), nullable=False, default=""),
+    sa.Column("lines_json", sa.Text, nullable=False, default="[]"),
+    sa.Column("message", sa.Text, default=""),
+    sa.Column("buyer_email", sa.String(200), default=""),
+    sa.Column("company", sa.String(200), default=""),
+    sa.Column("created_at", sa.String(32), nullable=False),             # when AOI made the round
+    sa.Column("received_at", sa.String(32), nullable=False),
+    sa.Column("status", sa.String(20), nullable=False, default="open"),   # open | responded | closed
+    sa.Column("response_json", sa.Text),
+    sa.Column("responded_at", sa.String(32)),
+)
+
 # Product images, fetched once from the feed's source URL and served from here
 # so buyers never load a NetSuite / shop URL directly.
 images = sa.Table(
@@ -509,6 +532,64 @@ class Store:
                 n += res.rowcount or 0
         return n
 
+    def outbox_item(self, outbox_id: int) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            r = conn.execute(sa.select(outbox).where(outbox.c.id == int(outbox_id))).mappings().first()
+        if not r:
+            return None
+        return {"id": r["id"], "kind": r["kind"], "status": r["status"], "created_at": r["created_at"], "buyer_key": r["buyer_key"],
+                "customer_id": r["customer_id"], "payload": json.loads(r["payload_json"]),
+                "result": json.loads(r["result_json"]) if r["result_json"] else None}
+
+    # --- negotiation rounds (pushed by AOI) -----------------------------------
+
+    def upsert_round(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Store a round from AOI. Any earlier round on the same offer that is
+        still open is closed: one live question per thread, and a stale link
+        can no longer answer it."""
+        now = now_iso()
+        tok = str(body["token"])
+        offer_id = int(body["offer_ref"])
+        kind = str(body.get("kind") or "counter")
+        row = {"token": tok, "offer_id": offer_id, "round_id": int(body.get("round_id") or 0), "round_no": int(body.get("round_no") or 0),
+               "kind": kind, "thread_status": str(body.get("thread_status") or ""),
+               "lines_json": json.dumps([{"sku": str(l.get("sku") or ""), "qty": int(l.get("qty") or 0), "price": float(l.get("price") or 0.0),
+                                          "description": str(l.get("description") or ""), "wholesale": float(l.get("wholesale") or 0.0)}
+                                         for l in (body.get("lines") or [])]),
+               "message": str(body.get("message") or ""), "buyer_email": str(body.get("buyer_email") or "").strip().lower(),
+               "company": str(body.get("company") or ""), "created_at": str(body.get("created_at") or now), "received_at": now,
+               "status": "open" if kind == "counter" else "closed"}
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(rounds).where(rounds.c.offer_id == offer_id, rounds.c.token != tok, rounds.c.status == "open")
+                         .values(status="closed"))
+            existing = conn.execute(sa.select(rounds.c.status).where(rounds.c.token == tok)).first()
+            if existing:
+                # a re-push never reopens a round the buyer already answered
+                row["status"] = existing[0] if existing[0] != "open" else row["status"]
+            _upsert(conn, rounds, [row], "token")
+        return self.round(tok)
+
+    def round(self, token: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            r = conn.execute(sa.select(rounds).where(rounds.c.token == str(token))).mappings().first()
+        return _round(r) if r else None
+
+    def rounds_for_offer(self, offer_id: int) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rs = conn.execute(sa.select(rounds).where(rounds.c.offer_id == int(offer_id)).order_by(rounds.c.round_no, rounds.c.received_at)).mappings().all()
+        return [_round(r) for r in rs]
+
+    def latest_round_for_offer(self, offer_id: int) -> dict[str, Any] | None:
+        rs = self.rounds_for_offer(offer_id)
+        return rs[-1] if rs else None
+
+    def respond_round(self, token: str, response: Mapping[str, Any]) -> bool:
+        """Mark an open round answered. False when it was not open (double click, stale link)."""
+        with self.engine.begin() as conn:
+            res = conn.execute(sa.update(rounds).where(rounds.c.token == str(token), rounds.c.status == "open")
+                               .values(status="responded", response_json=json.dumps(dict(response)), responded_at=now_iso()))
+            return bool(res.rowcount)
+
     def outbox_for(self, buyer_key: str, limit: int = 20) -> list[dict[str, Any]]:
         """What this buyer submitted (offers, and any older orders under a customer id)."""
         key = str(buyer_key)
@@ -521,6 +602,20 @@ class Store:
         return [{"id": r["id"], "kind": r["kind"], "status": r["status"], "created_at": r["created_at"],
                  "payload": json.loads(r["payload_json"]), "result": json.loads(r["result_json"]) if r["result_json"] else None}
                 for r in rows]
+
+
+def _round(r) -> dict[str, Any]:
+    d = dict(r)
+    try:
+        d["lines"] = json.loads(d.pop("lines_json") or "[]")
+    except (TypeError, ValueError):
+        d["lines"] = []
+    d["total"] = round(sum(l["qty"] * l["price"] for l in d["lines"]), 2)
+    try:
+        d["response"] = json.loads(d.pop("response_json") or "null")
+    except (TypeError, ValueError):
+        d["response"] = None
+    return d
 
 
 def _prod(r) -> dict[str, Any]:

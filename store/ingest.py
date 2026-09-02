@@ -75,6 +75,37 @@ def ingest(kind: str):
     return jsonify({"accepted": True, "kind": kind, "count": n}), 202
 
 
+ROUND_KINDS = ("counter", "accept", "decline", "recorded")
+
+
+@bp.post("/rounds")
+def rounds_push():
+    """AOI pushes a negotiation round (counter / accept / decline / recorded).
+    Price, quantity and message only — the same FORBIDDEN_KEYS guard applies.
+    Stores it and emails the buyer: a counter gets a link to /o/<token>."""
+    if not _keyed():
+        return jsonify({"error": "not found"}), 404
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not str(body.get("token") or "").strip() or not str(body.get("offer_ref") or "").isdigit():
+        return jsonify({"error": "body must carry token and offer_ref"}), 400
+    if body.get("kind") not in ROUND_KINDS:
+        return jsonify({"error": f"kind must be one of {list(ROUND_KINDS)}"}), 400
+    if not isinstance(body.get("lines", []), list):
+        return jsonify({"error": "lines must be a list"}), 400
+    hit = find_forbidden(body)
+    if hit:
+        current_app.logger.error("round push REFUSED: forbidden key at %s", hit)
+        return jsonify({"error": f"forbidden key at {hit}"}), 422
+    ctx = current_app.config["STORE"]
+    offer = ctx.store.outbox_item(int(body["offer_ref"]))
+    if not offer or offer["kind"] != "offer":
+        return jsonify({"error": "offer not found"}), 404
+    rnd = ctx.store.upsert_round(body)
+    from .shop import notify_buyer_round
+    emailed = notify_buyer_round(ctx, offer, rnd)
+    return jsonify({"accepted": True, "token": rnd["token"], "status": rnd["status"], "emailed": emailed}), 202
+
+
 @bp.post("/images/refresh")
 def images_refresh():
     """Key-protected: fetch a batch of missing images now (manual nudge / cron)."""

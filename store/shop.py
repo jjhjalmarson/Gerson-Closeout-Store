@@ -415,5 +415,111 @@ def offer_submit():
 @bp.get("/offers")
 @access_required
 def offers():
-    rows = _ctx().store.outbox_for(g.buyer["key"])
-    return render_template("offers.html", buyer=g.buyer, rows=rows, draft_count=_draft_count(_ctx().store, g.buyer))
+    store = _ctx().store
+    rows = store.outbox_for(g.buyer["key"])
+    for r in rows:
+        if r["kind"] == "offer":
+            last = store.latest_round_for_offer(r["id"])
+            r["round"] = last
+    return render_template("offers.html", buyer=g.buyer, rows=rows, draft_count=_draft_count(store, g.buyer))
+
+
+# --- negotiation: the buyer's side of a round (token is the credential) ------------
+
+ROUND_TITLES = {"counter": "Gerson countered your offer", "accept": "Your offer is accepted",
+                "decline": "Your offer was declined", "recorded": "Agreed terms recorded"}
+
+
+def _offer_lines_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [{"sku": str(l.get("sku") or ""), "qty": int(l.get("qty") or 0), "price": float(l.get("offer_price") or 0.0),
+             "description": str(l.get("description") or ""), "wholesale": float(l.get("wholesale") or 0.0)}
+            for l in payload.get("lines") or []]
+
+
+def _round_ctx(token: str):
+    store = _ctx().store
+    rnd = store.round(token)
+    if not rnd:
+        abort(404)
+    offer = store.outbox_item(rnd["offer_id"])
+    if not offer:
+        abort(404)
+    trail = store.rounds_for_offer(rnd["offer_id"])
+    return store, rnd, offer, trail
+
+
+def _round_text(offer: Mapping[str, Any], rnd: Mapping[str, Any], link: str) -> str:
+    p = offer["payload"]
+    ref = f"OF-{offer['id']}"
+    head = [f"{ROUND_TITLES.get(rnd['kind'], 'Update on your offer')} {ref}."]
+    if rnd.get("message"):
+        head.append(f"Message from Gerson: {rnd['message']}")
+    rows = []
+    if rnd.get("lines"):
+        theirs = {l["sku"]: l for l in _offer_lines_from_payload(p)}
+        rows.append(f"{'SKU':<16}{'Qty':>7}{'Your offer':>12}{'Gerson':>10}{'Ext':>12}  Description")
+        for l in rnd["lines"]:
+            mine = theirs.get(l["sku"], {})
+            rows.append(f"{l['sku']:<16}{l['qty']:>7}{(mine.get('price') or 0):>12.2f}{l['price']:>10.2f}{l['qty'] * l['price']:>12,.2f}  {l.get('description', '')[:44]}")
+        rows.append(f"Total {rnd['total']:,.2f}")
+    tail = {"counter": f"Review and answer here (accept, counter again, or decline):\n{link}",
+            "accept": "Nothing further is needed from you: the Gerson team will enter the order and confirm.",
+            "recorded": "These are the terms as agreed; the Gerson team will enter the order and confirm.",
+            "decline": "You are welcome to submit a new offer from the sheet."}.get(rnd["kind"], link)
+    return "\n".join(head) + ("\n\n" + "\n".join(rows) if rows else "") + "\n\n" + tail + "\n"
+
+
+def notify_buyer_round(ctx, offer: Mapping[str, Any], rnd: Mapping[str, Any]) -> bool:
+    """Email the buyer about a round pushed by AOI. Best effort."""
+    to = (rnd.get("buyer_email") or offer["payload"].get("email") or "").strip()
+    if not to:
+        return False
+    link = f"{ctx.cfg.base_url}{url_for('shop.round_view', token=rnd['token'])}"
+    subject = f"{ROUND_TITLES.get(rnd['kind'], 'Update on your offer')} — OF-{offer['id']}"
+    return bool(mail.send(ctx.cfg, to=to, subject=subject, body=_round_text(offer, rnd, link)))
+
+
+@bp.get("/o/<token>")
+def round_view(token: str):
+    store, rnd, offer, trail = _round_ctx(token)
+    theirs = _offer_lines_from_payload(offer["payload"])
+    by_sku = {l["sku"]: l for l in theirs}
+    lines = [{**l, "your_price": (by_sku.get(l["sku"]) or {}).get("price"), "your_qty": (by_sku.get(l["sku"]) or {}).get("qty")}
+             for l in rnd["lines"]]
+    return render_template("round.html", rnd=rnd, offer=offer, trail=trail, lines=lines, original=theirs,
+                           original_total=round(sum(l["qty"] * l["price"] for l in theirs), 2),
+                           open=(rnd["kind"] == "counter" and rnd["status"] == "open"), title=ROUND_TITLES.get(rnd["kind"], "Your offer"))
+
+
+@bp.post("/o/<token>/respond")
+def round_respond(token: str):
+    store, rnd, offer, trail = _round_ctx(token)
+    if not (rnd["kind"] == "counter" and rnd["status"] == "open"):
+        flash("This round was already answered or the offer is closed.")
+        return redirect(url_for("shop.round_view", token=token))
+    action = (request.form.get("action") or "").strip().lower()
+    if action not in ("accept", "counter", "decline"):
+        abort(400)
+    message = (request.form.get("message") or "").strip()[:2000]
+    lines = []
+    if action == "counter":
+        for l in rnd["lines"]:
+            qty = _num(request.form.get(f"qty[{l['sku']}]"), int)
+            price = round(_num(request.form.get(f"price[{l['sku']}]")), 2)
+            if qty > 0 and price > 0:
+                lines.append({"sku": l["sku"], "qty": qty, "price": price, "description": l.get("description", ""),
+                              "wholesale": l.get("wholesale", 0.0)})
+        if not lines:
+            flash("Enter a quantity and a price on at least one line to counter.")
+            return redirect(url_for("shop.round_view", token=token))
+        if all(any(o["sku"] == l["sku"] and o["qty"] == l["qty"] and abs(o["price"] - l["price"]) < 0.005 for o in rnd["lines"]) for l in lines) \
+                and len(lines) == len(rnd["lines"]):
+            action = "accept"                               # same terms typed back = acceptance
+            lines = []
+    response = {"offer_ref": offer["id"], "round_id": rnd["round_id"], "token": token, "action": action,
+                "lines": lines, "message": message, "email": rnd.get("buyer_email") or offer["payload"].get("email") or ""}
+    if not store.respond_round(token, response):
+        flash("This round was already answered.")
+        return redirect(url_for("shop.round_view", token=token))
+    store.enqueue("offer_response", response, customer_id=offer.get("customer_id"), buyer_key=offer.get("buyer_key"))
+    return render_template("round_done.html", rnd=rnd, offer=offer, action=action, lines=lines, message=message)
