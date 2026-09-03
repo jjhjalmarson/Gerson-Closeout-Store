@@ -139,6 +139,26 @@ def outbox_ack():
     return jsonify({"acked": store.ack_outbox(results)})
 
 
+@bp.get("/events")
+def events_pull():
+    """Behaviour events for AOI's dossier, oldest first from a cursor.
+
+    Cursor rather than ack: events are a stream, not work to be done, and a
+    re-pull is harmless.  AOI remembers the last id it stored.
+    """
+    if not _keyed():
+        return jsonify({"error": "not found"}), 404
+    try:
+        after = int(request.args.get("after", 0) or 0)
+        limit = int(request.args.get("limit", 500) or 500)
+    except ValueError:
+        return jsonify({"error": "after and limit must be integers"}), 400
+    store = current_app.config["STORE"].store
+    items = store.events_since(after, limit)
+    return jsonify({"items": items, "count": len(items),
+                    "cursor": items[-1]["id"] if items else after})
+
+
 @bp.get("/healthz")
 def healthz():
     store = current_app.config["STORE"].store

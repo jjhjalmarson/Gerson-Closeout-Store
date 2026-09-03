@@ -387,6 +387,37 @@ class OfferTest(StoreTestCase):
         self.assertEqual(len(app.config["STORE"].store.pull_outbox()), 1)
 
 
+    def test_behaviour_is_recorded_and_pulled_with_a_cursor(self):
+        """The point of the events table is what never becomes an offer: a SKU
+        opened and left, a search with no results, a price typed and abandoned."""
+        self.client.get("/?q=lantern")
+        self.client.get("/?q=zzz-nothing-like-this")
+        self.client.get("/item/L1")
+        self.client.post("/offer/line", json={"sku": "L1", "qty": 24, "price": 10})
+        self.client.post("/offer/line", json={"sku": "L1", "qty": 24, "price": 8})   # walked their number down
+        self.client.get("/offer")                                        # reviewed it
+        self.client.post("/offer/line", json={"sku": "L1", "qty": 0, "price": 0})    # ...and took it off
+        kinds = [e["kind"] for e in self.store.events_since(0)]
+        self.assertEqual(kinds, ["sheet_viewed", "sheet_viewed", "item_viewed", "line_priced", "line_priced",
+                                 "offer_reviewed", "line_removed"])
+        evs = self.store.events_since(0)
+        self.assertTrue(evs[1]["payload"]["no_results"])                             # what they wanted and we lack
+        self.assertEqual(evs[1]["payload"]["q"], "zzz-nothing-like-this")
+        self.assertEqual(evs[2]["sku"], "L1")
+        priced = evs[4]["payload"]
+        self.assertEqual((priced["price"], priced["prev_price"], priced["qty"]), (8.0, 10.0, 24))
+        self.assertEqual(evs[6]["payload"]["prev_price"], 8.0)                       # the abandoned number survives
+        self.assertEqual({e["buyer_key"] for e in evs}, {"inv:ross-xyz"})
+        self.assertEqual(len({e["session_id"] for e in evs}), 1)                     # one visit, stitched
+        # AOI pulls with a cursor; a re-pull is harmless and returns nothing new
+        r = self.client.get("/events?limit=3", headers={"X-API-Key": KEY})
+        first = r.get_json()
+        self.assertEqual((first["count"], first["cursor"]), (3, evs[2]["id"]))
+        rest = self.client.get(f"/events?after={first['cursor']}", headers={"X-API-Key": KEY}).get_json()
+        self.assertEqual([e["kind"] for e in rest["items"]], kinds[3:])
+        self.assertEqual(self.client.get("/events").status_code, 404)                # no key, no stream
+
+
 class NegotiationRoundTest(StoreTestCase):
     def setUp(self):
         super().setUp()

@@ -18,6 +18,7 @@ import csv
 import functools
 import io
 import re
+import secrets
 from typing import Any, Mapping
 
 from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, render_template, request, session,
@@ -156,6 +157,9 @@ def login_token(token: str):
         session["customer_id"] = ident
     else:
         return redirect(url_for("shop.login"))
+    buyer = _resolve_buyer()
+    if buyer:
+        ev("signed_in", buyer=buyer)
     return redirect(url_for("shop.home"))
 
 
@@ -264,6 +268,33 @@ def apply_post():
 
 # --- the sheet ------------------------------------------------------------------
 
+def _session_id() -> str:
+    """A stable id for this browser session, so a visit can be stitched back
+    together. Random, not derived from anything about the person."""
+    sid = session.get("sid")
+    if not sid:
+        sid = secrets.token_urlsafe(9)
+        session["sid"] = sid
+    return sid
+
+
+def ev(kind: str, *, sku: str = "", buyer: Mapping[str, Any] | None = None, **payload: Any) -> None:
+    """Record what a buyer did (JJ, 2026-09-03).
+
+    Server-side on purpose: no beacons, no third-party script, and it works with
+    JavaScript off.  What it cannot see is dwell time and image zoom; what it
+    can see is every SKU opened, every search that found nothing, and every
+    price typed into a box and then abandoned -- which is the number that never
+    reaches an offer and is worth the most.
+    """
+    b = buyer if buyer is not None else getattr(g, "buyer", None)
+    if not b:
+        return
+    _ctx().store.record_event(kind, buyer_key=b.get("key", ""), buyer_label=b.get("name", ""),
+                              buyer_class=b.get("buyer_class", ""), session_id=_session_id(), sku=sku,
+                              payload={k: v for k, v in payload.items() if v not in (None, "")})
+
+
 def _draft_count(store, buyer) -> int:
     return len(store.draft(buyer["key"]))
 
@@ -294,6 +325,10 @@ def home():
         p["draft_qty"] = d.get("qty") or ""
         p["draft_price"] = ("%.2f" % d["price"]) if d.get("price") else ""
     args = {k: v for k, v in {**f, "sort": sort if sort != "default" else None}.items() if v}
+    # A search that returns nothing is the most useful row in the table: it says
+    # what they came for that we do not have.
+    ev("sheet_viewed", **f, sort=(sort if sort != "default" else ""), page=(page if page > 1 else None),
+       results=total, no_results=(total == 0 and bool(f["q"])) or None)
     return render_template("sheet.html", buyer=g.buyer, items=items,
                            facets=store.facets(brand=f["brand"], category=f["category"], companies=companies),
                            brand=f["brand"], category=f["category"], subcategory=f["subcategory"], q=f["q"] or "",
@@ -309,6 +344,8 @@ def item(sku: str):
     if not p:
         abort(404)
     d = store.draft(g.buyer["key"]).get(sku) or {}
+    ev("item_viewed", sku=p["sku"], brand=p.get("brand"), category=p.get("category"),
+       wholesale=p.get("wholesale"), qty_available=p.get("qty_available"))
     return render_template("item.html", buyer=g.buyer, p=p, draft_qty=d.get("qty") or "",
                            draft_price=("%.2f" % d["price"]) if d.get("price") else "",
                            draft_count=_draft_count(store, g.buyer))
@@ -355,9 +392,20 @@ def _apply_line(draft: dict, sku: str, product: dict | None, qty_raw: Any, price
         return None
     qty = _snap_qty(_num(qty_raw, int), product["case_pack"], product["qty_available"])
     price = round(_num(price_raw), 2)
+    was = draft.get(sku)
     if qty > 0 and price > 0:
         draft[sku] = {"qty": qty, "price": price}
+        # Append-only: the draft row is overwritten, the history is not. This is
+        # where an abandoned price survives, and where a buyer walking their
+        # number down while they think shows up.
+        if not was or was.get("qty") != qty or was.get("price") != price:
+            ev("line_priced", sku=sku, qty=qty, price=price, wholesale=product.get("wholesale"),
+               pct_of_wholesale=(round(price / product["wholesale"], 4) if product.get("wholesale") else None),
+               qty_available=product.get("qty_available"),
+               prev_qty=(was or {}).get("qty"), prev_price=(was or {}).get("price"))
         return draft[sku]
+    if was:
+        ev("line_removed", sku=sku, prev_qty=was.get("qty"), prev_price=was.get("price"))
     draft.pop(sku, None)
     return None
 
@@ -453,6 +501,8 @@ def _prefill(buyer) -> dict[str, str]:
 @access_required
 def offer():
     lines, total = _offer_lines(_ctx().store, g.buyer)
+    ev("offer_reviewed", lines=len(lines), total=total,
+       wholesale_total=round(sum(l["wholesale"] * l["qty"] for l in lines), 2))
     return render_template("offer.html", buyer=g.buyer, lines=lines, total=total, draft_count=len(lines),
                            wholesale_total=round(sum(l["wholesale"] * l["qty"] for l in lines), 2), form=_prefill(g.buyer))
 
@@ -461,6 +511,7 @@ def offer():
 @access_required
 def offer_csv():
     lines, _total = _offer_lines(_ctx().store, g.buyer)
+    ev("offer_downloaded", lines=len(lines))
     return Response(_csv(lines), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=gerson-closeout-offer.csv"})
 
@@ -530,6 +581,8 @@ def offer_submit():
     mail.send(ctx.cfg, to=form["email"], subject=f"We received your offer (OF-{ref})",
               body=(f"Thank you. Your offer OF-{ref} ({len(lines)} lines, ${total:,.2f}) reached the Gerson closeout team; "
                     f"we will reply to this address with an acceptance or a counter.\n\n{text}"), attachments=[attachment])
+    ev("offer_submitted", ref=f"OF-{ref}", lines=len(lines), units=payload["units"], total=total,
+       wholesale_total=whsl_total, pct_of_wholesale=payload["pct_of_wholesale"])
     store.set_draft(g.buyer["key"], {})
     return render_template("offer_sent.html", buyer=g.buyer, ref=ref, payload=payload, draft_count=0, notified=bool(notified))
 
@@ -556,6 +609,13 @@ def _offer_lines_from_payload(payload: Mapping[str, Any]) -> list[dict[str, Any]
     return [{"sku": str(l.get("sku") or ""), "qty": int(l.get("qty") or 0), "price": float(l.get("offer_price") or 0.0),
              "description": str(l.get("description") or ""), "wholesale": float(l.get("wholesale") or 0.0)}
             for l in payload.get("lines") or []]
+
+
+def _round_buyer(offer: Mapping[str, Any]) -> dict[str, Any]:
+    """The account behind a tokenized round page: there is no session here, the
+    link is the identity."""
+    b = (offer.get("payload") or {}).get("buyer") or {}
+    return {"key": b.get("key") or "", "name": b.get("label") or "", "buyer_class": b.get("buyer_class") or ""}
 
 
 def _round_ctx(token: str):
@@ -611,6 +671,8 @@ def round_view(token: str):
     by_sku = {l["sku"]: l for l in theirs}
     lines = [{**l, "your_price": (by_sku.get(l["sku"]) or {}).get("price"), "your_qty": (by_sku.get(l["sku"]) or {}).get("qty")}
              for l in rnd["lines"]]
+    ev("round_viewed", buyer=_round_buyer(offer), round_no=rnd["round_no"], round_kind=rnd["kind"],
+       offer_ref=offer["id"], status=rnd["status"])
     return render_template("round.html", rnd=rnd, offer=offer, trail=trail, lines=lines, original=theirs,
                            original_total=round(sum(l["qty"] * l["price"] for l in theirs), 2),
                            open=(rnd["kind"] == "counter" and rnd["status"] == "open"), title=ROUND_TITLES.get(rnd["kind"], "Your offer"))
@@ -648,4 +710,7 @@ def round_respond(token: str):
         flash("This round was already answered.")
         return redirect(url_for("shop.round_view", token=token))
     store.enqueue("offer_response", response, customer_id=offer.get("customer_id"), buyer_key=offer.get("buyer_key"))
+    ev("round_answered", buyer=_round_buyer(offer), action=action, round_no=rnd["round_no"], offer_ref=offer["id"],
+       lines=len(lines) or None, total=(round(sum(l["qty"] * l["price"] for l in lines), 2) if lines else None),
+       minutes_to_answer=None)
     return render_template("round_done.html", rnd=rnd, offer=offer, action=action, lines=lines, message=message)
