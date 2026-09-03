@@ -29,7 +29,8 @@ never shows it** — buyers see original wholesale and type what they will pay.
 
 Buyers are approved **on the store**, by a person, and are never tied to a
 NetSuite customer record (JJ, 2026-09-02). An admin (an address in
-`STORE_ADMIN_EMAILS`, signed in at `/admin` with the same one-time email link)
+`STORE_ADMIN_EMAILS`, signed in at `/admin` with the same one-time email link, or with a
+password set on the portal after the first link sign-in)
 invites a buyer by email; the buyer signs up at `/join/<token>` (or requests
 access at `/apply`); the admin approves, which emails a sign-in link. Approved
 buyers see every company's SKUs. AOI's older paths — the customers allowlist

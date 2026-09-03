@@ -16,6 +16,8 @@ import functools
 
 from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, session, url_for
 
+from werkzeug.security import generate_password_hash
+
 from . import mail
 from .db import BUYER_CLASSES
 
@@ -47,7 +49,28 @@ def home():
     counts = store.buyer_offer_counts()
     buyers = [dict(b, offers=counts.get(f"buyer:{b['id']}", 0)) for b in store.list_buyers() if b["status"] in ("approved", "suspended")]
     return render_template("admin.html", admin_email=current_admin(), pending=store.list_buyers(status="pending"),
-                           buyers=buyers, invites=store.list_signup_invites(), classes=list(BUYER_CLASSES))
+                           buyers=buyers, invites=store.list_signup_invites(), classes=list(BUYER_CLASSES),
+                           has_password=bool(store.admin_password_hash(current_admin())))
+
+
+PASSWORD_MIN_LEN = 12
+
+
+@bp.post("/password")
+@admin_required
+def set_password():
+    """Set or change this admin's own password (JJ, 2026-09-03). The emailed
+    link keeps working, so a forgotten password is fixed by signing in with the
+    link and setting a new one here."""
+    pw, again = request.form.get("password") or "", request.form.get("password2") or ""
+    if len(pw) < PASSWORD_MIN_LEN:
+        flash(f"Password must be at least {PASSWORD_MIN_LEN} characters.")
+    elif pw != again:
+        flash("The two passwords do not match.")
+    else:
+        _ctx().store.set_admin_password_hash(current_admin(), generate_password_hash(pw))
+        flash("Password saved. Next time, sign in with your email and password.")
+    return redirect(url_for("admin.home"))
 
 
 def send_invite_email(ctx, invite: dict) -> bool:

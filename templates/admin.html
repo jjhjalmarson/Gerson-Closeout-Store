@@ -5,6 +5,16 @@
 <p class="muted" style="margin-bottom:.2rem"><b>Class</b> decides which floor Gerson prices their offers against, and only you can set it — a regional retailer calling itself a liquidator would reach the lowest floor. New accounts start at <b>regional</b>.</p>
 <p class="muted">Invite buyers by email — an invitation is the approval, so they are on the sheet as soon as they sign up. The queue below is for people who found the open application form. Buyers sign in with a one-time link sent to their email. Nothing here touches NetSuite.</p>
 
+<details style="margin-bottom:1.2rem" {% if not has_password %}open{% endif %}>
+  <summary><b>Your sign-in</b> · {% if has_password %}password set, change it here{% else %}set a password so you can skip the emailed link{% endif %}</summary>
+  <form method="post" action="{{ url_for('admin.set_password') }}" class="bar" style="margin-top:.6rem">
+    <label>New password<input type="password" name="password" minlength="12" required autocomplete="new-password" style="width:16rem"></label>
+    <label>Again<input type="password" name="password2" minlength="12" required autocomplete="new-password" style="width:16rem"></label>
+    <button type="submit">{% if has_password %}Change password{% else %}Set password{% endif %}</button>
+  </form>
+  <p class="muted" style="margin:.4rem 0 0">At least 12 characters. The emailed link still works, so if you forget it, sign in with the link and set a new one here.</p>
+</details>
+
 <h2>Invite a buyer</h2>
 <form method="post" action="{{ url_for('admin.invite') }}" class="bar">
   <label>Email *<input type="email" name="email" required style="width:16rem"></label>
