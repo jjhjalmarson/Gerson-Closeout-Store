@@ -28,13 +28,14 @@
 <div class="bar">
   <a class="btn" href="{{ url_for('shop.offer') }}">Review offer (<span class="draft-count">{{ draft_count }}</span>)</a>
   <button type="submit" class="sec">Save all</button>
-  <label class="muted" style="margin-left:auto">Your target margin
-    <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
+  <span style="margin-left:auto"></span>
+  <label class="muted">Your target margin <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
+  <label class="muted">Freight factor <input id="freightFactor" type="number" min="0" max="50" step="0.5" style="width:4.5rem;text-align:right" placeholder="%">%</label>
   <span class="muted" id="autosaveMsg" style="flex:1 1 100%">Lines save automatically as you type; they stay on your offer until you submit or clear it.
-    Suggested retail is what the item carries at a normal keystone-plus margin — set your target above and each line shows what you can pay to hit it.</span>
+    Set your margin and freight above and every line shows what you would retail it for at the price you are offering.</span>
 </div>
 <table>
-  <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Suggested retail</th><th class="right">Qty</th><th class="right">Your offer / unit</th><th class="right">Your margin</th></tr></thead>
+  <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">MSRP</th><th class="right">Qty</th><th class="right">Your offer / unit</th><th class="right">Your retail</th></tr></thead>
   <tbody>
   {% for p in items %}
   <tr>
@@ -43,10 +44,10 @@
     <td class="muted">{{ pack(p) }}</td>
     <td class="right">{{ p.qty_available }}</td>
     <td class="right price">${{ '%.2f'|format(p.wholesale) }}</td>
-    <td class="right retail" data-retail="{{ '%.2f'|format(p.retail) }}">${{ '%.2f'|format(p.retail) }}</td>
+    <td class="right" data-msrp="{{ '%.2f'|format(p.msrp) }}">${{ '%.2f'|format(p.msrp) }}</td>
     <td class="right"><input class="qty" type="number" name="qty[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></td>
     <td class="right"><input class="offer" type="number" name="price[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_price }}" min="0" step="0.01" placeholder="$"> <span class="saved" data-saved="{{ p.sku }}"></span></td>
-    <td class="right margin" data-margin="{{ p.sku }}"></td>
+    <td class="right retail"></td>
   </tr>
   {% endfor %}
   </tbody>
@@ -91,7 +92,7 @@
 
 })();
 </script>
-{% include "_margin.html" %}
+{% include "_buyer_math.html" %}
 {% if pages > 1 %}
 <nav class="bar" style="justify-content:center">
   {% if page > 1 %}<a class="btn sec" href="{{ url_for('shop.home', page=page-1, **page_args) }}">&larr; Previous</a>{% endif %}
