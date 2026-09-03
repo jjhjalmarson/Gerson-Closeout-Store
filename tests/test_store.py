@@ -238,13 +238,34 @@ class SheetTest(StoreTestCase):
         self.assertIn("inner 6 · master 24", html)                            # inner first, then master
         self.assertIn("pack of 4", html)                                        # T2 has no pack data: NetSuite minimum
         self.assertNotIn("case of", html); self.assertNotIn("about ", html)
-        self.assertIn(">96<", html)
+        self.assertIn(">96", html)                                              # units available
+        self.assertIn("16 &times; 6", html.replace("\u00d7", "&times;"))         # ...and in cases of the smallest pack
         for hidden in ("$20.00", "$30.00", "20% off", "70% off", "Drops to", "16.25"):
             self.assertNotIn(hidden, html)                                    # no closeout price, tier or step-down
         self.assertIn('name="qty[L1]"', html); self.assertIn('name="price[L1]"', html)
         item = self.client.get("/item/L1").get_data(as_text=True)
         self.assertIn("UPC 1", item); self.assertIn("original wholesale", item); self.assertNotIn("$20.00", item)
         self.assertEqual(self.client.get("/item/NOPE").status_code, 404)
+
+    def test_filters_take_several_brands_and_a_depth_floor(self):
+        """Brands and categories are multi-select, and depth can be asked for in
+        units or in cases of the smallest lot a buyer can take (JJ, 2026-09-03)."""
+        both = self.client.get("/?brand=Fall%2FHoliday&brand=Park+Hill+Collection").get_data(as_text=True)
+        self.assertIn("Lantern", both); self.assertIn("Tree", both)
+        one = self.client.get("/?brand=Park+Hill+Collection").get_data(as_text=True)
+        self.assertNotIn("Lantern", one); self.assertIn("Tree", one)
+        # depth in pieces
+        self.assertIn("Lantern", self.client.get("/?min_units=96").get_data(as_text=True))
+        deep = self.client.get("/?min_units=97").get_data(as_text=True)
+        self.assertNotIn("Lantern", deep); self.assertNotIn("Tree", deep)      # 96 and 40 on hand
+        # depth in cases: L1 is 96 in inners of 6 (16), T2 is 40 in packs of 4 (10)
+        twelve = self.client.get("/?min_cases=12").get_data(as_text=True)
+        self.assertIn("Lantern", twelve); self.assertNotIn("Tree", twelve)
+        self.assertNotIn("Lantern", self.client.get("/?min_cases=17").get_data(as_text=True))
+        # the controls come back filled in, so a filter can be adjusted not retyped
+        page = self.client.get("/?brand=Park+Hill+Collection&min_cases=5").get_data(as_text=True)
+        self.assertIn('<option value="Park Hill Collection" selected>', page)
+        self.assertIn('name="min_cases" type="number" min="0" step="1" value="5"', page)
 
     def test_filters_search_sort_and_paging(self):
         html = self.client.get("/?brand=Park+Hill+Collection").get_data(as_text=True)

@@ -295,6 +295,11 @@ def ev(kind: str, *, sku: str = "", buyer: Mapping[str, Any] | None = None, **pa
                               payload={k: v for k, v in payload.items() if v not in (None, "")})
 
 
+def _picks(args, name: str) -> list[str]:
+    """Every value chosen for a multi-select filter, blanks dropped."""
+    return [v.strip() for v in args.getlist(name) if v and v.strip()]
+
+
 def _draft_count(store, buyer) -> int:
     return len(store.draft(buyer["key"]))
 
@@ -304,8 +309,13 @@ def _draft_count(store, buyer) -> int:
 def home():
     store = _ctx().store
     a = request.args
-    f = {"brand": a.get("brand") or None, "category": a.get("category") or None,
-         "subcategory": a.get("subcategory") or None, "q": (a.get("q") or "").strip() or None}
+    # Brand / category / subcategory are multi-select: several of each, or none.
+    f = {"brand": _picks(a, "brand"), "category": _picks(a, "category"),
+         "subcategory": _picks(a, "subcategory"), "q": (a.get("q") or "").strip() or None,
+         # Depth, the way a buyer asks for it: at least this many pieces, or at
+         # least this many of the smallest case they can take (JJ, 2026-09-03).
+         "min_units": _num(a.get("min_units"), int) or None,
+         "min_cases": _num(a.get("min_cases"), int) or None}
     sort = a.get("sort") or "default"
     if sort not in store.SORTS:
         sort = "default"
@@ -332,6 +342,7 @@ def home():
     return render_template("sheet.html", buyer=g.buyer, items=items,
                            facets=store.facets(brand=f["brand"], category=f["category"], companies=companies),
                            brand=f["brand"], category=f["category"], subcategory=f["subcategory"], q=f["q"] or "",
+                           min_units=f["min_units"] or "", min_cases=f["min_cases"] or "",
                            sort=sort, page=page, pages=pages, total=total, filtered=filtered, page_args=args,
                            draft_count=len(draft))
 
