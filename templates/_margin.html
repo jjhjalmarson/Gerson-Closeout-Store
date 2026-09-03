@@ -1,0 +1,61 @@
+{# Your-margin arithmetic, shared by the sheet, the offer review and a counter.
+
+   Every row that carries [data-retail] and an input.offer gets its margin
+   against original retail written into td.margin; td.margin-total, if present,
+   gets the blended margin weighted by quantity. With a target margin set, a
+   line that misses it also shows what it would have to be bought at.
+
+   All of it is the buyer's own arithmetic, in their browser: no target margin
+   and no computed number is ever sent to Gerson.
+#}
+<script>
+(function(){
+  const target = document.getElementById('targetMargin');
+  try { const saved = localStorage.getItem('targetMargin'); if(saved !== null && target) target.value = saved; } catch(e){}
+  const money = v => '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  const pct = v => Math.round(v * 100) + '%';
+
+  function paint(){
+    const t = (target && target.value !== '') ? Math.min(Math.max(Number(target.value), 0), 95) / 100 : null;
+    let rev = 0, spend = 0;
+    document.querySelectorAll('tr').forEach(row => {
+      const rt = row.querySelector('[data-retail]'), cell = row.querySelector('td.margin');
+      const priceEl = row.querySelector('input.offer, [data-price]');
+      if(!rt) return;
+      const retail = Number(rt.dataset.retail || 0);
+      const price = Number(priceEl ? (priceEl.value !== undefined ? priceEl.value : priceEl.dataset.price) : 0) || 0;
+      const qtyEl = row.querySelector('input.qty, [data-qty]');
+      const qty = Number(qtyEl ? (qtyEl.value !== undefined ? qtyEl.value : qtyEl.dataset.qty) : 0) || 0;
+      if(retail > 0 && price > 0 && qty > 0){ rev += retail * qty; spend += price * qty; }
+      if(!cell) return;
+      if(!retail){ cell.textContent = ''; return; }
+      if(price > 0){
+        const m = (retail - price) / retail;
+        const ok = t === null || m >= t - 1e-9;
+        cell.innerHTML = '<b style="color:' + (ok ? '#0e8c8a' : '#b45309') + '">' + pct(m) + '</b>'
+          + ((t !== null && !ok) ? '<br><span class="muted" style="font-size:.78rem">' + money(retail * (1 - t))
+                                   + ' for ' + pct(t) + '</span>' : '');
+      } else {
+        cell.innerHTML = (t === null) ? ''
+          : '<span class="muted" style="font-size:.78rem">pay ' + money(retail * (1 - t)) + '</span>';
+      }
+    });
+    const totalCell = document.querySelector('.margin-total');
+    if(totalCell){
+      totalCell.innerHTML = rev > 0
+        ? '<b style="color:' + ((t === null || (rev - spend) / rev >= t - 1e-9) ? '#0e8c8a' : '#b45309') + '">'
+          + pct((rev - spend) / rev) + '</b>'
+        : '';
+    }
+  }
+
+  if(target){
+    target.addEventListener('input', () => {
+      try { localStorage.setItem('targetMargin', target.value); } catch(e){}
+      paint();
+    });
+  }
+  document.querySelectorAll('input.offer, input.qty').forEach(i => i.addEventListener('input', paint));
+  paint();
+})();
+</script>

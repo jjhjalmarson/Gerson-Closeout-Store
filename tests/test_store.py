@@ -268,6 +268,21 @@ class SheetTest(StoreTestCase):
         self.assertEqual(self.client.get("/?page=99").status_code, 200)             # clamps, no error
 
 
+class RetailTest(unittest.TestCase):
+    """Original retail: wholesale at a 60% margin, landed on a .99 price point."""
+
+    def test_price_points(self):
+        self.assertEqual(D.retail_price(305.00), 762.99)      # 762.50 rounds up to the .99 above
+        self.assertEqual(D.retail_price(28.22), 70.99)
+        self.assertEqual(D.retail_price(5.68), 13.99)         # 14.20 lands on the .99 *below*: nearest, not up
+        self.assertEqual(D.retail_price(20.00), 49.99)
+        self.assertEqual(D.retail_price(1.08), 2.99)
+        self.assertEqual(D.retail_price(100.0, 0.5), 199.99)  # the margin is a parameter
+        for bad in (0, -5, None, "x"):
+            self.assertEqual(D.retail_price(bad), 0.0)
+        self.assertEqual(D.retail_price(10.0, 1.0), 0.0)      # a 100% margin has no price
+
+
 class OfferTest(StoreTestCase):
     def setUp(self):
         super().setUp()
@@ -386,6 +401,23 @@ class OfferTest(StoreTestCase):
         self.assertTrue(any("OFFER_NOTIFY_EMAILS" in m for m in logs.output))
         self.assertEqual(len(app.config["STORE"].store.pull_outbox()), 1)
 
+
+    def test_the_sheet_shows_original_retail_and_the_margin_tools(self):
+        """The buyer's own arithmetic: what it retails for, and a target margin
+        that turns their offer box into "what can I pay"."""
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Original retail", html)
+        self.assertIn('data-retail="62.99"', html)            # L1 wholesale $25.19 -> $62.99
+        self.assertIn('id="targetMargin"', html)
+        self.assertIn("Your margin", html)
+        item = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertIn("original retail", item)
+        review = self.client.post("/offer/line", json={"sku": "L1", "qty": 24, "price": 10})
+        self.assertEqual(review.status_code, 200)
+        page = self.client.get("/offer").get_data(as_text=True)
+        self.assertIn("Original retail", page); self.assertIn('id="targetMargin"', page)
+        # and nothing about our side of it ever appears on a buyer page
+        self.assertNotIn("cost", page.lower().replace("closeout", ""))
 
     def test_behaviour_is_recorded_and_pulled_with_a_cursor(self):
         """The point of the events table is what never becomes an offer: a SKU
