@@ -11,8 +11,12 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
+import logging
+
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
+
+log = logging.getLogger(__name__)
 
 metadata = sa.MetaData()
 
@@ -140,6 +144,25 @@ carts = sa.Table(
     sa.Column("customer_id", sa.String(96), primary_key=True),
     sa.Column("lines_json", sa.Text, nullable=False, default="{}"),
     sa.Column("updated_at", sa.String(32), nullable=False),
+)
+
+# What buyers do here, one row per event (JJ, 2026-09-03). The point is the
+# things that never become an offer: the SKU opened and left, the search with no
+# results, the price typed into a box and abandoned. Every session is a known
+# account, so this is a behaviour record per buyer rather than an anonymous
+# funnel. AOI pulls it with a cursor and keeps the dossier; nothing here is ever
+# shown to a buyer, and no price Gerson set is recorded -- only what they did.
+events = sa.Table(
+    "events", metadata,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("kind", sa.String(40), nullable=False, index=True),
+    sa.Column("buyer_key", sa.String(96), nullable=False, index=True),   # inv:<token> | buyer:<id> | cust:<id>
+    sa.Column("buyer_label", sa.String(200), default=""),
+    sa.Column("buyer_class", sa.String(20), default=""),
+    sa.Column("session_id", sa.String(64), default=""),                  # one browser session, for stitching a visit
+    sa.Column("sku", sa.String(64), default="", index=True),
+    sa.Column("payload_json", sa.Text, nullable=False, default="{}"),
+    sa.Column("created_at", sa.String(32), nullable=False, index=True),
 )
 
 # Everything the store hands back to AOI. kind: order | offer | application | hold.
@@ -661,6 +684,46 @@ class Store:
                     "customer_id")
 
     # --- outbox -------------------------------------------------------------
+
+    # --- behaviour events ---------------------------------------------------
+
+    def record_event(self, kind: str, *, buyer_key: str, buyer_label: str = "", buyer_class: str = "",
+                     session_id: str = "", sku: str = "", payload: dict[str, Any] | None = None) -> int:
+        """One thing a buyer did. Never raises into a request: a lost event is
+        worth less than a broken page."""
+        try:
+            with self.engine.begin() as conn:
+                res = conn.execute(events.insert().values(
+                    kind=str(kind)[:40], buyer_key=str(buyer_key)[:96], buyer_label=str(buyer_label or "")[:200],
+                    buyer_class=str(buyer_class or "")[:20], session_id=str(session_id or "")[:64],
+                    sku=str(sku or "")[:64], payload_json=json.dumps(payload or {}), created_at=now_iso()))
+                return int(res.inserted_primary_key[0])
+        except Exception:                                  # noqa: BLE001
+            log.exception("event %s not recorded", kind)
+            return 0
+
+    def events_since(self, after_id: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        """Cursor pull for AOI: everything above ``after_id``, oldest first."""
+        stmt = (sa.select(events).where(events.c.id > int(after_id))
+                .order_by(events.c.id).limit(max(1, min(int(limit), 2000))))
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        out = []
+        for r in rows:
+            try:
+                payload = json.loads(r["payload_json"])
+            except (TypeError, ValueError):
+                payload = {}
+            out.append({"id": r["id"], "kind": r["kind"], "buyer_key": r["buyer_key"], "buyer_label": r["buyer_label"],
+                        "buyer_class": r["buyer_class"], "session_id": r["session_id"], "sku": r["sku"],
+                        "payload": payload, "created_at": r["created_at"]})
+        return out
+
+    def prune_events(self, keep_days: int = 400) -> int:
+        """The store is not the archive: AOI keeps the history."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(keep_days))).isoformat(timespec="seconds")
+        with self.engine.begin() as conn:
+            return int(conn.execute(sa.delete(events).where(events.c.created_at < cutoff)).rowcount or 0)
 
     def enqueue(self, kind: str, payload: dict[str, Any], customer_id: str | None = None,
                 buyer_key: str | None = None) -> int:
