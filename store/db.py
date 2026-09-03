@@ -172,6 +172,7 @@ rounds = sa.Table(
     sa.Column("status", sa.String(20), nullable=False, default="open"),   # open | responded | closed
     sa.Column("response_json", sa.Text),
     sa.Column("responded_at", sa.String(32)),
+    sa.Column("opened_at", sa.String(32)),                               # first time the buyer opened the link
 )
 
 # Product images, fetched once from the feed's source URL and served from here
@@ -704,6 +705,11 @@ class Store:
         rs = self.rounds_for_offer(offer_id)
         return rs[-1] if rs else None
 
+    def mark_round_opened(self, token: str) -> None:
+        """First open of the buyer's link; later opens keep the first time."""
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(rounds).where(rounds.c.token == str(token), rounds.c.opened_at.is_(None)).values(opened_at=now_iso()))
+
     def respond_round(self, token: str, response: Mapping[str, Any]) -> bool:
         """Mark an open round answered. False when it was not open (double click, stale link)."""
         with self.engine.begin() as conn:
@@ -790,7 +796,8 @@ def _ensure_columns(eng: Engine) -> None:
                            "company": "VARCHAR(20) NOT NULL DEFAULT ''"},
               "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
-              "login_tokens": {"subject": "VARCHAR(200)"}}
+              "login_tokens": {"subject": "VARCHAR(200)"},
+              "rounds": {"opened_at": "VARCHAR(32)"}}
     with eng.begin() as conn:
         for table, cols in wanted.items():
             have = {c["name"] for c in insp.get_columns(table)}
