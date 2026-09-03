@@ -9,7 +9,7 @@
 <form method="post" action="{{ url_for('shop.offer_set') }}">
 <input type="hidden" name="next" value="{{ url_for('shop.offer') }}">
 <table>
-  <tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Extended</th></tr>
+  <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Extended</th></tr></thead>
   {% for l in lines %}
   <tr>
     <td><b>{{ l.description }}</b><br><span class="muted">{{ l.sku }} · {{ l.brand }}{% if l.category %} · {{ l.category }}{% endif %}</span></td>
