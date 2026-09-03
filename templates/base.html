@@ -34,6 +34,20 @@
   .login { max-width:460px; margin:3rem auto; padding:1.5rem; border:1px solid var(--line); border-radius:10px; }
   .pill { display:inline-block; background:var(--panel); border-radius:999px; padding:.1rem .5rem; font-size:.75rem; color:var(--muted); }
   .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:1rem; }
+  /* Filters: every control the same height, its label above it, so the row
+     reads as one panel instead of a line of mismatched boxes. */
+  .filters { background:var(--panel); padding:.9rem 1rem; border-radius:8px; margin:.8rem 0; }
+  .filters .fields { display:flex; flex-wrap:wrap; gap:.9rem 1.1rem; align-items:flex-start; }
+  .filters .f { display:flex; flex-direction:column; gap:.3rem; }
+  .filters .f > span { font-size:.68rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); }
+  .filters select[multiple] { min-width:12rem; height:6.5rem; padding:.2rem; background:#fff; }
+  .filters select[multiple] option { padding:.15rem .35rem; }
+  .filters .narrow { width:6.5rem; text-align:right; }
+  .filters .stack { display:flex; flex-direction:column; gap:.9rem; }
+  .filters .actions { display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; margin-top:.9rem;
+                      padding-top:.8rem; border-top:1px solid var(--line); }
+  .filters .actions .grow { flex:1 1 16rem; }
+  .filters .hint { font-size:.75rem; color:var(--muted); }
 </style>
 </head>
 <body>

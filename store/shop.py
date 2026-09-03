@@ -527,7 +527,9 @@ def offer_csv():
                     headers={"Content-Disposition": "attachment; filename=gerson-closeout-offer.csv"})
 
 
-def _offer_text(payload: dict[str, Any], ref: int) -> str:
+def _offer_text(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -> str:
+    """The plain-text part. The buyer's copy is addressed to the buyer: the
+    team's instructions do not belong in their inbox."""
     rows = [f"{'SKU':<16}{'Qty':>7}{'Whsl':>10}{'Offer':>10}{'% whsl':>8}{'Ext':>12}  Description"]
     for l in payload["lines"]:
         pct = f"{l['pct_of_wholesale'] * 100:.0f}%" if l.get("pct_of_wholesale") else ""
@@ -537,17 +539,88 @@ def _offer_text(payload: dict[str, Any], ref: int) -> str:
     totals = f"Lines: {payload['line_count']}   Units: {payload['units']:,}   Offer total: ${payload['total']:,.2f}"
     if payload.get("pct_of_wholesale"):
         totals += f"   ({payload['pct_of_wholesale'] * 100:.0f}% of ${payload['wholesale_total']:,.2f} wholesale)"
-    head = [f"Closeout offer OF-{ref} from {who}",
-            f"Email: {payload['email']}" + (f"   Phone: {payload['phone']}" if payload.get("phone") else ""), totals]
-    if payload.get("notes"):
-        head.append(f"Notes: {payload['notes']}")
-    buyer = payload.get("buyer") or {}
-    if buyer.get("kind") == "invite":
-        head.append(f"Invite: {buyer.get('label') or ''}")
-    elif buyer.get("customer_id"):
-        head.append(f"NetSuite customer: {buyer['customer_id']}")
-    return ("\n".join(head) + "\n\n" + "\n".join(rows)
-            + "\n\nThe same lines are attached as CSV. Reply to the buyer to accept or counter.\n")
+    if for_buyer:
+        head = [f"Your closeout offer OF-{ref}", totals]
+        tail = ("\n\nYour lines are attached as a CSV. The Gerson closeout team will reply to this address "
+                "with an acceptance or a counter.\n")
+    else:
+        head = [f"Closeout offer OF-{ref} from {who}",
+                f"Email: {payload['email']}" + (f"   Phone: {payload['phone']}" if payload.get("phone") else ""), totals]
+        if payload.get("notes"):
+            head.append(f"Notes: {payload['notes']}")
+        buyer = payload.get("buyer") or {}
+        if buyer.get("kind") == "invite":
+            head.append(f"Invite: {buyer.get('label') or ''}")
+        elif buyer.get("customer_id"):
+            head.append(f"NetSuite customer: {buyer['customer_id']}")
+        tail = ("\n\nThe same lines are attached as CSV. Reply to the buyer to accept or counter; AOI sends the "
+                "priced view (cost, margin, floors) separately, with a link to answer it there.\n")
+    return "\n".join(head) + "\n\n" + "\n".join(rows) + tail
+
+
+_MAIL_CSS = ("font:14px/1.5 'Segoe UI',Arial,sans-serif;color:#1f2430")
+_TH = ("text-align:right;font:600 11px 'Segoe UI',Arial,sans-serif;letter-spacing:.03em;text-transform:uppercase;"
+       "color:#5b6472;padding:0 10px 6px;border-bottom:1px solid #d5dae1;white-space:nowrap")
+_TD = "text-align:right;padding:8px 10px;border-bottom:1px solid #eef1f4;white-space:nowrap"
+
+
+def _offer_html(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -> str:
+    """The same offer as a table that lines up in a proportional font."""
+    import html as _h
+    e = lambda v: _h.escape(str(v or ""))                                   # noqa: E731
+    rows = []
+    for l in payload["lines"]:
+        pct = f"{l['pct_of_wholesale'] * 100:.0f}%" if l.get("pct_of_wholesale") else ""
+        rows.append(
+            f"<tr><td style=\"{_TD};text-align:left\"><b>{e(l['sku'])}</b>"
+            f"<div style=\"color:#5b6472;font-size:12px\">{e(l['description'])}</div></td>"
+            f"<td style=\"{_TD}\">{l['qty']:,}</td>"
+            f"<td style=\"{_TD}\">${l['wholesale']:,.2f}</td>"
+            f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b></td>"
+            f"<td style=\"{_TD};color:#5b6472\">{pct}</td>"
+            f"<td style=\"{_TD}\">${l['extended']:,.2f}</td></tr>")
+    heads = ("Item", "Qty", "Wholesale", "Offer / unit", "% whsl", "Extended")
+    table = ("<table cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;width:100%;max-width:720px\"><tr>"
+             + "".join(f"<th style=\"{_TH}" + (";text-align:left" if i == 0 else "") + f"\">{h}</th>"
+                       for i, h in enumerate(heads))
+             + "</tr>" + "".join(rows)
+             + f"<tr><td style=\"{_TD};text-align:left;border-bottom:0;padding-top:10px\"><b>Total</b>"
+               f"<span style=\"color:#5b6472\"> · {payload['line_count']} line"
+               f"{'' if payload['line_count'] == 1 else 's'}</span></td>"
+               f"<td style=\"{_TD};border-bottom:0;padding-top:10px\"><b>{payload['units']:,}</b></td>"
+               f"<td colspan=\"3\" style=\"{_TD};border-bottom:0;padding-top:10px;color:#5b6472\">"
+             + (f"{payload['pct_of_wholesale'] * 100:.0f}% of ${payload['wholesale_total']:,.2f} wholesale"
+                if payload.get("pct_of_wholesale") else "")
+             + f"</td><td style=\"{_TD};border-bottom:0;padding-top:10px\"><b>${payload['total']:,.2f}</b></td></tr>"
+             + "</table>")
+
+    if for_buyer:
+        lede = (f"<p style=\"margin:0 0 4px\">Thank you — your offer <b>OF-{ref}</b> is with the Gerson closeout "
+                f"team.</p><p style=\"margin:0 0 18px;color:#5b6472\">We will reply to this address with an "
+                f"acceptance or a counter. Your lines are attached as a CSV.</p>")
+        who = ""
+    else:
+        contact = payload["company"] + (f" / {payload['contact']}" if payload.get("contact") else "")
+        bits = [e(payload.get("email"))]
+        if payload.get("phone"):
+            bits.append(e(payload["phone"]))
+        buyer = payload.get("buyer") or {}
+        if buyer.get("kind") == "invite" and buyer.get("label"):
+            bits.append("invite: " + e(buyer["label"]))
+        elif buyer.get("customer_id"):
+            bits.append("NetSuite " + e(buyer["customer_id"]))
+        lede = (f"<p style=\"margin:0 0 4px;font-size:16px\"><b>{e(contact)}</b> wants "
+                f"<b>${payload['total']:,.2f}</b> of closeout goods.</p>"
+                f"<p style=\"margin:0 0 18px;color:#5b6472\">{' · '.join(bits)}</p>")
+        who = (f"<p style=\"margin:18px 0 0;color:#5b6472\">Their note: “{e(payload['notes'])}”</p>"
+               if payload.get("notes") else "")
+    foot = ("" if for_buyer else
+            "<p style=\"margin:18px 0 0;color:#5b6472;font-size:12px\">Reply to the buyer to accept or counter. "
+            "AOI sends the priced view — cost, margin and floors — separately, with a link to answer it there.</p>")
+    return (f"<div style=\"{_MAIL_CSS}\">"
+            f"<p style=\"margin:0 0 14px;font:600 12px 'Segoe UI',Arial,sans-serif;letter-spacing:.06em;"
+            f"text-transform:uppercase;color:#0e8c8a\">Gerson closeout offer OF-{ref}</p>"
+            f"{lede}{table}{who}{foot}</div>")
 
 
 @bp.post("/offer/submit")
@@ -581,17 +654,17 @@ def offer_submit():
         "pct_of_wholesale": round(total / whsl_total, 4) if whsl_total > 0 else None,
     }
     ref = store.enqueue("offer", payload, customer_id=g.buyer.get("customer_id"), buyer_key=g.buyer["key"])
-    text = _offer_text(payload, ref)
     attachment = (f"offer-OF-{ref}.csv", _csv(lines).encode("utf-8"), "text/csv")
     subject = (f"Closeout offer OF-{ref}: {form['company']} — {len(lines)} line{'s' if len(lines) != 1 else ''}, "
                f"${total:,.2f}")
     notified = [to for to in ctx.cfg.offer_notify_list
-                if mail.send(ctx.cfg, to=to, subject=subject, body=text, attachments=[attachment])]
+                if mail.send(ctx.cfg, to=to, subject=subject, body=_offer_text(payload, ref),
+                             html=_offer_html(payload, ref), attachments=[attachment])]
     if not ctx.cfg.offer_notify_list:
         current_app.logger.error("OFFER_NOTIFY_EMAILS is not set: offer OF-%s only reached the outbox", ref)
-    mail.send(ctx.cfg, to=form["email"], subject=f"We received your offer (OF-{ref})",
-              body=(f"Thank you. Your offer OF-{ref} ({len(lines)} lines, ${total:,.2f}) reached the Gerson closeout team; "
-                    f"we will reply to this address with an acceptance or a counter.\n\n{text}"), attachments=[attachment])
+    mail.send(ctx.cfg, to=form["email"], subject=f"We have your offer (OF-{ref})",
+              body=_offer_text(payload, ref, for_buyer=True), html=_offer_html(payload, ref, for_buyer=True),
+              attachments=[attachment])
     ev("offer_submitted", ref=f"OF-{ref}", lines=len(lines), units=payload["units"], total=total,
        wholesale_total=whsl_total, pct_of_wholesale=payload["pct_of_wholesale"])
     store.set_draft(g.buyer["key"], {})
