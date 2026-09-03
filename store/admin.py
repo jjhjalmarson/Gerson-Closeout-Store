@@ -17,6 +17,7 @@ import functools
 from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, session, url_for
 
 from . import mail
+from .db import BUYER_CLASSES
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -46,7 +47,7 @@ def home():
     counts = store.buyer_offer_counts()
     buyers = [dict(b, offers=counts.get(f"buyer:{b['id']}", 0)) for b in store.list_buyers() if b["status"] in ("approved", "suspended")]
     return render_template("admin.html", admin_email=current_admin(), pending=store.list_buyers(status="pending"),
-                           buyers=buyers, invites=store.list_signup_invites())
+                           buyers=buyers, invites=store.list_signup_invites(), classes=list(BUYER_CLASSES))
 
 
 def send_invite_email(ctx, invite: dict) -> bool:
@@ -106,7 +107,8 @@ def set_status(buyer_id: int):
     b = ctx.store.buyer(buyer_id)
     if not b:
         abort(404)
-    ctx.store.set_buyer_status(buyer_id, status, by=current_admin())
+    ctx.store.set_buyer_status(buyer_id, status, by=current_admin(),
+                               buyer_class=request.form.get("buyer_class") or None)
     if status == "approved":
         token = ctx.store.create_login_token(b["email"], "", APPROVAL_LINK_MINUTES, subject=f"buyer:{buyer_id}")
         link = f"{ctx.cfg.base_url}{url_for('shop.login_token', token=token)}"
@@ -118,4 +120,19 @@ def set_status(buyer_id: int):
         flash(f"{b['company']} declined.")
     else:
         flash(f"{b['company']} suspended; they are signed out on their next request.")
+    return redirect(url_for("admin.home"))
+
+
+@bp.post("/buyers/<int:buyer_id>/class")
+@admin_required
+def set_class(buyer_id: int):
+    """The governed buyer class (brief S6). An admin's call and only an admin's:
+    it decides which floor AOI prices their offers against, so a buyer choosing
+    it themselves would be choosing their own floor."""
+    ctx = _ctx()
+    b = ctx.store.buyer(buyer_id)
+    if not b:
+        abort(404)
+    cls = ctx.store.set_buyer_class(buyer_id, request.form.get("buyer_class") or "")
+    flash(f"{b['company']} is now priced as {cls}.")
     return redirect(url_for("admin.home"))

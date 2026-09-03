@@ -46,7 +46,8 @@ def _resolve_buyer() -> dict[str, Any] | None:
         b = store.buyer(int(bid))
         if b and b["status"] == "approved":
             return {"kind": "buyer", "key": f"buyer:{b['id']}", "token": "", "name": b["company"], "contact": b.get("contact") or "",
-                    "email": b["email"], "companies": list(ALL_COMPANIES), "customer_id": None, "rep_name": "", "buyer_id": b["id"]}
+                    "email": b["email"], "companies": list(ALL_COMPANIES), "customer_id": None, "rep_name": "",
+                    "buyer_id": b["id"], "buyer_class": b.get("buyer_class") or "regional"}
         return None
     tok = session.get("invite")
     if tok:
@@ -54,7 +55,8 @@ def _resolve_buyer() -> dict[str, Any] | None:
         if inv:
             return {"kind": "invite", "key": f"inv:{tok}", "token": tok, "name": inv["label"] or "Guest",
                     "contact": inv.get("contact") or "", "email": inv.get("email") or "",
-                    "companies": inv["companies"], "customer_id": None, "rep_name": ""}
+                    "companies": inv["companies"], "customer_id": None, "rep_name": "",
+                    "buyer_class": inv.get("buyer_class") or "regional"}
         return None
     cid = session.get("customer_id")
     if cid:
@@ -62,7 +64,8 @@ def _resolve_buyer() -> dict[str, Any] | None:
         if cust:
             return {"kind": "customer", "key": f"cust:{cust['customer_id']}", "token": "", "name": cust["company_name"],
                     "contact": "", "email": "", "companies": cust["companies"], "customer_id": cust["customer_id"],
-                    "rep_name": cust.get("rep_name") or "", "accounts": cust["accounts"]}
+                    "rep_name": cust.get("rep_name") or "", "accounts": cust["accounts"],
+                    "buyer_class": cust.get("buyer_class") or "regional"}
     return None
 
 
@@ -505,7 +508,10 @@ def offer_submit():
     whsl_total = round(sum(l["wholesale"] * l["qty"] for l in lines), 2)
     payload = {
         "buyer": {"kind": g.buyer["kind"], "key": g.buyer["key"], "label": g.buyer["name"],
-                  "customer_id": g.buyer.get("customer_id"), "invite_token": g.buyer.get("token") or ""},
+                  "customer_id": g.buyer.get("customer_id"), "invite_token": g.buyer.get("token") or "",
+                  # Which lane AOI prices this against. Set by an admin here, sent
+                  # with the offer; the buyer never sees or chooses it.
+                  "buyer_class": g.buyer.get("buyer_class") or "regional"},
         "customer_id": g.buyer.get("customer_id"),
         **form,
         "lines": lines, "line_count": len(lines), "units": int(sum(l["qty"] for l in lines)),

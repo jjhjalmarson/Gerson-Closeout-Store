@@ -2,6 +2,7 @@
 {% block title %}Admin · Gerson Closeout Offers{% endblock %}
 {% block body %}
 <h1>Buyer admin <span class="muted" style="font-weight:normal">· signed in as {{ admin_email }}</span></h1>
+<p class="muted" style="margin-bottom:.2rem"><b>Class</b> decides which floor Gerson prices their offers against, and only you can set it — a regional retailer calling itself a liquidator would reach the lowest floor. New accounts start at <b>regional</b>.</p>
 <p class="muted">Invite buyers by email — an invitation is the approval, so they are on the sheet as soon as they sign up. The queue below is for people who found the open application form. Buyers sign in with a one-time link sent to their email. Nothing here touches NetSuite.</p>
 
 <h2>Invite a buyer</h2>
@@ -19,7 +20,9 @@
   {% for b in pending %}
   <tr>
     <td><b>{{ b.company }}</b></td><td>{{ b.contact }}</td><td>{{ b.email }}</td><td>{{ b.phone }}</td><td class="muted">{{ b.notes }}</td><td class="muted">{{ b.created_at[:16] }}{% if b.invite_token %} · invited{% endif %}</td>
-    <td><form method="post" action="{{ url_for('admin.set_status', buyer_id=b.id) }}" style="display:inline"><button name="status" value="approved">Approve</button> <button name="status" value="declined" class="sec">Decline</button></form></td>
+    <td><form method="post" action="{{ url_for('admin.set_status', buyer_id=b.id) }}" style="display:flex;gap:.3rem;align-items:center">
+      <select name="buyer_class">{% for c in classes %}<option value="{{ c }}" {% if c == b.buyer_class %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
+      <button name="status" value="approved">Approve</button> <button name="status" value="declined" class="sec">Decline</button></form></td>
   </tr>
   {% endfor %}
 </table>
@@ -28,10 +31,15 @@
 <h2>Buyers <span class="pill">{{ buyers|length }}</span></h2>
 {% if not buyers %}<p class="muted">No approved buyers yet.</p>{% else %}
 <table>
-  <tr><th>Company</th><th>Contact</th><th>Email</th><th>Status</th><th>Offers</th><th>Approved</th><th></th></tr>
+  <tr><th>Company</th><th>Contact</th><th>Email</th><th>Class</th><th>Status</th><th>Offers</th><th>Approved</th><th></th></tr>
   {% for b in buyers %}
   <tr>
-    <td><b>{{ b.company }}</b></td><td>{{ b.contact }}</td><td>{{ b.email }}</td><td>{{ b.status }}</td><td>{{ b.offers }}</td><td class="muted">{{ (b.approved_at or '')[:10] }} {{ b.approved_by or '' }}</td>
+    <td><b>{{ b.company }}</b></td><td>{{ b.contact }}</td><td>{{ b.email }}</td>
+    <td><form method="post" action="{{ url_for('admin.set_class', buyer_id=b.id) }}" style="display:flex;gap:.3rem">
+      <select name="buyer_class" onchange="this.form.submit()">
+        {% for c in classes %}<option value="{{ c }}" {% if c == b.buyer_class %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      </select><noscript><button class="sec">Set</button></noscript></form></td>
+    <td>{{ b.status }}</td><td>{{ b.offers }}</td><td class="muted">{{ (b.approved_at or '')[:10] }} {{ b.approved_by or '' }}</td>
     <td><form method="post" action="{{ url_for('admin.set_status', buyer_id=b.id) }}" style="display:inline">
       {% if b.status == 'approved' %}<button name="status" value="suspended" class="sec">Suspend</button>{% else %}<button name="status" value="approved">Reactivate</button>{% endif %}</form></td>
   </tr>

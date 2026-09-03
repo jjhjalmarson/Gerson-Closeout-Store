@@ -341,7 +341,8 @@ class OfferTest(StoreTestCase):
         self.assertEqual((p["company"], p["email"], p["line_count"], p["units"], p["total"]), ("Ross Stores", "sam@ross.test", 2, 32, 520.0))
         self.assertEqual(p["wholesale_total"], 1400.0)
         self.assertAlmostEqual(p["pct_of_wholesale"], 0.3714, places=4)
-        self.assertEqual(p["buyer"], {"kind": "invite", "key": "inv:ross-xyz", "label": "Ross Stores", "customer_id": None, "invite_token": "ross-xyz"})
+        self.assertEqual(p["buyer"], {"kind": "invite", "key": "inv:ross-xyz", "label": "Ross Stores", "customer_id": None,
+                                      "invite_token": "ross-xyz", "buyer_class": "regional"})
         self.assertEqual([(l["sku"], l["qty"], l["offer_price"], l["wholesale"]) for l in p["lines"]], [("L1", 24, 10.0, 25.0), ("T2", 8, 35.0, 100.0)])
         self.assertIn("take-all", p["notes"])
         # two designated addresses + the buyer's copy, each with the CSV attached
@@ -560,6 +561,31 @@ class SignupAdminTest(StoreTestCase):
         inv2 = self.store.create_signup_invite("x@y.test", created_by="admin@gerson.test")
         self.client.post(f"/admin/invites/{inv2['token']}/revoke")
         self.assertEqual(self.client.get(f"/join/{inv2['token']}").status_code, 404)
+
+    def test_buyer_class_is_the_admins_call_and_rides_the_offer(self):
+        """The governed field (brief S6): a buyer never picks the lane their
+        offers are priced against, and an unrecognised value falls back to the
+        strictest one rather than the lowest floor."""
+        self.admin_login()
+        self.client.post("/admin/invite", data={"email": "pat@tjx.test", "company": "TJX"}, follow_redirects=True)
+        join = self._link(self.sent[-1]["body"], "/join/")
+        buyer = self.app.test_client()
+        buyer.post(join, data={"company": "TJX Companies", "contact": "Pat Buyer"})
+        b = self.store.buyer_for_email("pat@tjx.test")
+        self.assertEqual(b["buyer_class"], "regional")                     # never liquidator by default
+        r = self.client.post(f"/admin/buyers/{b['id']}/class", data={"buyer_class": "liquidator"}, follow_redirects=True)
+        self.assertIn("priced as liquidator", r.get_data(as_text=True))
+        self.assertEqual(self.store.buyer(b["id"])["buyer_class"], "liquidator")
+        self.client.post(f"/admin/buyers/{b['id']}/class", data={"buyer_class": "vip"})
+        self.assertEqual(self.store.buyer(b["id"])["buyer_class"], "regional")   # junk never widens the lane
+        self.assertEqual(self.app.test_client().post(f"/admin/buyers/{b['id']}/class",
+                                                    data={"buyer_class": "liquidator"}).status_code, 404)   # not an admin
+        # the class travels with the offer so AOI prices it against the right floor
+        self.store.set_buyer_class(b["id"], "liquidator")
+        buyer.post("/offer/line", json={"sku": "L1", "qty": 24, "price": 10})
+        buyer.post("/offer/submit", data={"company": "TJX Companies", "contact": "Pat Buyer", "email": "pat@tjx.test"})
+        it = [i for i in self.store.pull_outbox() if i["kind"] == "offer"][0]
+        self.assertEqual(it["payload"]["buyer"]["buyer_class"], "liquidator")
 
     def test_open_application_becomes_a_pending_buyer(self):
         r = self.client.post("/apply", data={"company": "New Shop", "contact": "Owner", "email": "owner@newshop.com", "resale_number": "TX-1", "city": "Austin", "state": "TX"})
