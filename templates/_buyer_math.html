@@ -1,0 +1,77 @@
+{# What the buyer would sell it for, from what they offer (JJ, 2026-09-03).
+
+   The buyer sets two numbers once — the freight factor they carry and the
+   margin they need — and every line then answers the only question they
+   actually have: "if I buy it at my price, what do I put on the shelf?"
+
+       landed      = offer / (1 - freight factor)
+       your retail = landed / (1 - target margin)
+
+   MSRP sits beside it as the anchor, so the gap between the two is the story:
+   what it sold for, and what they could sell it for.
+
+   Every row carries [data-msrp] and an input.offer (or [data-price], where the
+   price is fixed, as on a counter); the answer goes into td.retail, and
+   td.retail-total, if present, gets the retail value of the whole buy.
+
+   All of it is their arithmetic, in their browser, kept in their own storage.
+   Neither number is ever sent to Gerson.
+#}
+<script>
+(function(){
+  const marginEl = document.getElementById('targetMargin');
+  const freightEl = document.getElementById('freightFactor');
+  try {
+    const m = localStorage.getItem('targetMargin'); if(m !== null && marginEl) marginEl.value = m;
+    const f = localStorage.getItem('freightFactor'); if(f !== null && freightEl) freightEl.value = f;
+  } catch(e){}
+
+  const money = v => '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+  const rate = (el, max) => {
+    if(!el || el.value === '') return null;
+    const n = Number(el.value);
+    return isFinite(n) ? Math.min(Math.max(n, 0), max) / 100 : null;
+  };
+
+  function paint(){
+    const margin = rate(marginEl, 95);
+    const freight = rate(freightEl, 50) || 0;
+    let value = 0;
+    document.querySelectorAll('tr').forEach(row => {
+      const anchor = row.querySelector('[data-msrp]'), cell = row.querySelector('td.retail');
+      if(!anchor) return;
+      const msrp = Number(anchor.dataset.msrp || 0);
+      const priceEl = row.querySelector('input.offer, [data-price]');
+      const offer = Number(priceEl ? (priceEl.value !== undefined ? priceEl.value : priceEl.dataset.price) : 0) || 0;
+      const qtyEl = row.querySelector('input.qty, [data-qty]');
+      const qty = Number(qtyEl ? (qtyEl.value !== undefined ? qtyEl.value : qtyEl.dataset.qty) : 0) || 0;
+
+      let mine = 0;
+      if(offer > 0 && margin !== null && margin < 1) mine = (offer / (1 - freight)) / (1 - margin);
+      if(mine > 0 && qty > 0) value += mine * qty;
+      if(!cell) return;
+      if(!mine){
+        cell.innerHTML = (offer > 0 && margin === null)
+          ? '<span class="muted" style="font-size:.78rem">set your margin</span>' : '';
+        return;
+      }
+      const off = msrp > 0 ? Math.round((1 - mine / msrp) * 100) : null;
+      cell.innerHTML = '<b>' + money(mine) + '</b>'
+        + (off !== null ? '<br><span class="muted" style="font-size:.78rem">'
+             + (off >= 0 ? off + '% under MSRP' : Math.abs(off) + '% over MSRP') + '</span>' : '');
+    });
+    const totalCell = document.querySelector('.retail-total');
+    if(totalCell) totalCell.innerHTML = value > 0 ? '<b>' + money(value) + '</b>' : '';
+  }
+
+  [marginEl, freightEl].forEach(el => {
+    if(!el) return;
+    el.addEventListener('input', () => {
+      try { localStorage.setItem(el.id, el.value); } catch(e){}
+      paint();
+    });
+  });
+  document.querySelectorAll('input.offer, input.qty').forEach(i => i.addEventListener('input', paint));
+  paint();
+})();
+</script>

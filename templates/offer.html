@@ -9,31 +9,33 @@
 <form method="post" action="{{ url_for('shop.offer_set') }}">
 <input type="hidden" name="next" value="{{ url_for('shop.offer') }}">
 <table>
-  <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Suggested retail</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Your margin</th><th class="right">Extended</th></tr></thead>
+  <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">MSRP</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Your retail</th><th class="right">Extended</th></tr></thead>
   {% for l in lines %}
   <tr>
     <td><b>{{ l.description }}</b><br><span class="muted">{{ l.sku }} · {{ l.brand }}{% if l.category %} · {{ l.category }}{% endif %}</span></td>
     <td class="muted">{{ pack(l) }}</td>
     <td class="right">{{ l.qty_available }}</td>
     <td class="right">${{ '%.2f'|format(l.wholesale) }}</td>
-    {% set retail = l.wholesale|retail %}
-    <td class="right retail" data-retail="{{ '%.2f'|format(retail) }}">{% if retail %}${{ '%.2f'|format(retail) }}{% endif %}</td>
+    {% set msrp = l.wholesale|msrp %}
+    <td class="right" data-msrp="{{ '%.2f'|format(msrp) }}">{% if msrp %}${{ '%.2f'|format(msrp) }}{% endif %}</td>
     <td class="right"><input class="qty" type="number" name="qty[{{ l.sku }}]" value="{{ l.qty }}" min="0" step="{{ l.case_pack }}"></td>
     <td class="right"><input class="offer" type="number" name="price[{{ l.sku }}]" value="{{ '%.2f'|format(l.offer_price) }}" min="0" step="0.01"></td>
     <td class="right muted">{% if l.pct_of_wholesale %}{{ (l.pct_of_wholesale * 100)|round|int }}%{% endif %}</td>
-    <td class="right margin"></td>
+    <td class="right retail"></td>
     <td class="right">${{ '%.2f'|format(l.extended) }}</td>
   </tr>
   {% endfor %}
   <tr><td colspan="5" class="right"><b>Total</b> <span class="muted">· {{ lines|length }} line{{ 's' if lines|length != 1 }}</span></td>
       <td class="right"><b>{{ lines|sum(attribute='qty') }}</b></td><td></td>
       <td class="right muted">{% if wholesale_total > 0 %}{{ ((total / wholesale_total) * 100)|round|int }}% of ${{ '%.2f'|format(wholesale_total) }}{% endif %}</td>
-      <td class="right margin-total"></td>
+      <td class="right retail-total"></td>
       <td class="right"><b>${{ '%.2f'|format(total) }}</b></td></tr>
 </table>
 <div class="bar">
   <label class="muted">Your target margin <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
-  <span class="muted">Margins are against suggested retail, and are yours alone — we never see them.</span>
+  <label class="muted">Freight factor <input id="freightFactor" type="number" min="0" max="50" step="0.5" style="width:4.5rem;text-align:right" placeholder="%">%</label>
+  <span class="muted">Your retail is your offer, carried in at your freight factor and marked up to your margin.
+    Both numbers stay in your browser — we never see them.</span>
 </div>
 <div class="bar">
   <button type="submit" class="sec">Update lines</button>
@@ -55,5 +57,5 @@
   <div class="bar"><button type="submit">Submit offer</button> <span class="muted">You get a copy by email; the lines go to the Gerson closeout team.</span></div>
 </form>
 {% endif %}
-{% include "_margin.html" %}
+{% include "_buyer_math.html" %}
 {% endblock %}

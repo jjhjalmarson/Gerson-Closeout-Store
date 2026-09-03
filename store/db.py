@@ -847,15 +847,15 @@ def _round(r) -> dict[str, Any]:
     return d
 
 
-# Suggested retail: what the item carries at a normal retail margin off the
-# published wholesale, landed on a .99 price point the way a shelf tag would be
-# (JJ, 2026-09-03). It is arithmetic on the wholesale the buyer can already see,
-# so it discloses nothing new -- it is there to anchor the offer against what
-# the goods are worth on a shelf, and to let a buyer work their own margin.
+# MSRP: what the item sold for at full price -- the wholesale the buyer can
+# already see, marked up at the margin a normal retailer takes, landed on a .99
+# price point the way a shelf tag is (JJ, 2026-09-03). It is arithmetic on a
+# number already on the page, so it discloses nothing new. Its job is context:
+# this is what it was, and this is what a full-price retailer paid for it.
 RETAIL_MARGIN = 0.60
 
 
-def retail_price(wholesale: float, margin: float = RETAIL_MARGIN) -> float:
+def msrp_price(wholesale: float, margin: float = RETAIL_MARGIN) -> float:
     """Wholesale at ``margin`` gross margin, rounded to the nearest $X.99."""
     try:
         w = float(wholesale or 0.0)
@@ -873,7 +873,7 @@ def _prod(r) -> dict[str, Any]:
     for k in ("wholesale", "closeout_price", "next_step_price"):
         if d.get(k) is not None:
             d[k] = float(d[k])
-    d["retail"] = retail_price(d.get("wholesale") or 0.0)
+    d["msrp"] = msrp_price(d.get("wholesale") or 0.0)
     d["order_unit"], d["unit_label"] = order_unit(d)
     return d
 

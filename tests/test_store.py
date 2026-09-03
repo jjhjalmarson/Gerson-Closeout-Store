@@ -268,19 +268,20 @@ class SheetTest(StoreTestCase):
         self.assertEqual(self.client.get("/?page=99").status_code, 200)             # clamps, no error
 
 
-class RetailTest(unittest.TestCase):
-    """Suggested retail: wholesale at a 60% margin, landed on a .99 price point."""
+class MsrpTest(unittest.TestCase):
+    """MSRP: the wholesale on the page, marked up the way a full-price retailer
+    would have, landed on a .99 price point."""
 
     def test_price_points(self):
-        self.assertEqual(D.retail_price(305.00), 762.99)      # 762.50 rounds up to the .99 above
-        self.assertEqual(D.retail_price(28.22), 70.99)
-        self.assertEqual(D.retail_price(5.68), 13.99)         # 14.20 lands on the .99 *below*: nearest, not up
-        self.assertEqual(D.retail_price(20.00), 49.99)
-        self.assertEqual(D.retail_price(1.08), 2.99)
-        self.assertEqual(D.retail_price(100.0, 0.5), 199.99)  # the margin is a parameter
+        self.assertEqual(D.msrp_price(305.00), 762.99)      # 762.50 rounds up to the .99 above
+        self.assertEqual(D.msrp_price(28.22), 70.99)
+        self.assertEqual(D.msrp_price(5.68), 13.99)         # 14.20 lands on the .99 *below*: nearest, not up
+        self.assertEqual(D.msrp_price(20.00), 49.99)
+        self.assertEqual(D.msrp_price(1.08), 2.99)
+        self.assertEqual(D.msrp_price(100.0, 0.5), 199.99)  # the margin is a parameter
         for bad in (0, -5, None, "x"):
-            self.assertEqual(D.retail_price(bad), 0.0)
-        self.assertEqual(D.retail_price(10.0, 1.0), 0.0)      # a 100% margin has no price
+            self.assertEqual(D.msrp_price(bad), 0.0)
+        self.assertEqual(D.msrp_price(10.0, 1.0), 0.0)      # a 100% margin has no price
 
 
 class OfferTest(StoreTestCase):
@@ -402,20 +403,20 @@ class OfferTest(StoreTestCase):
         self.assertEqual(len(app.config["STORE"].store.pull_outbox()), 1)
 
 
-    def test_the_sheet_shows_original_retail_and_the_margin_tools(self):
-        """The buyer's own arithmetic: what it retails for, and a target margin
-        that turns their offer box into "what can I pay"."""
+    def test_the_sheet_shows_msrp_and_the_buyers_own_retail_tools(self):
+        """MSRP is the anchor -- what it sold for and what a full-price retailer
+        paid. Their margin and freight then turn their offer into their retail."""
         html = self.client.get("/").get_data(as_text=True)
-        self.assertIn("Suggested retail", html)
-        self.assertIn('data-retail="62.99"', html)            # L1 wholesale $25.19 -> $62.99
-        self.assertIn('id="targetMargin"', html)
-        self.assertIn("Your margin", html)
+        self.assertIn("MSRP", html)
+        self.assertIn('data-msrp="62.99"', html)              # L1 wholesale $25.00 -> $62.99
+        self.assertIn('id="targetMargin"', html); self.assertIn('id="freightFactor"', html)
+        self.assertIn("Your retail", html)
         item = self.client.get("/item/L1").get_data(as_text=True)
-        self.assertIn("suggested retail", item)
+        self.assertIn("MSRP", item)
         review = self.client.post("/offer/line", json={"sku": "L1", "qty": 24, "price": 10})
         self.assertEqual(review.status_code, 200)
         page = self.client.get("/offer").get_data(as_text=True)
-        self.assertIn("Suggested retail", page); self.assertIn('id="targetMargin"', page)
+        self.assertIn("MSRP", page); self.assertIn('id="freightFactor"', page)
         # and nothing about our side of it ever appears on a buyer page
         self.assertNotIn("cost", page.lower().replace("closeout", ""))
 
