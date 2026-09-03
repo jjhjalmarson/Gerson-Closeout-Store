@@ -2,7 +2,7 @@
 {% block title %}Admin · Gerson Closeout Offers{% endblock %}
 {% block body %}
 <h1>Buyer admin <span class="muted" style="font-weight:normal">· signed in as {{ admin_email }}</span></h1>
-<p class="muted">Invite buyers by email, approve the ones who sign up, suspend anyone who should no longer see the sheet. Approved buyers sign in with a one-time link sent to their email. Nothing here touches NetSuite.</p>
+<p class="muted">Invite buyers by email — an invitation is the approval, so they are on the sheet as soon as they sign up. The queue below is for people who found the open application form. Buyers sign in with a one-time link sent to their email. Nothing here touches NetSuite.</p>
 
 <h2>Invite a buyer</h2>
 <form method="post" action="{{ url_for('admin.invite') }}" class="bar">
@@ -12,8 +12,8 @@
   <button type="submit">Send invitation</button>
 </form>
 
-<h2>Waiting for approval <span class="pill">{{ pending|length }}</span></h2>
-{% if not pending %}<p class="muted">Nobody is waiting.</p>{% else %}
+<h2>Applications waiting for approval <span class="pill">{{ pending|length }}</span></h2>
+{% if not pending %}<p class="muted">Nobody is waiting. Invited buyers do not queue here.</p>{% else %}
 <table>
   <tr><th>Company</th><th>Contact</th><th>Email</th><th>Phone</th><th>Notes</th><th>Signed up</th><th></th></tr>
   {% for b in pending %}

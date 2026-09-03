@@ -418,9 +418,15 @@ class Store:
                          .values(revoked_at=now_iso()))
 
     def create_buyer(self, *, company: str, contact: str, email: str, phone: str = "", notes: str = "",
-                     invite_token: str | None = None) -> dict[str, Any]:
+                     invite_token: str | None = None, approve: bool = False, approved_by: str = "") -> dict[str, Any]:
         """A sign-up. An email already on file keeps its record (and its status
-        unless it was declined, which becomes pending again)."""
+        unless it was declined, which becomes pending again).
+
+        ``approve`` is the invitation path (JJ, 2026-09-03): an admin already
+        decided who this is when they sent the invitation, so the sign-up is
+        approved on the spot rather than queued a second time.  A **suspended**
+        buyer is never resurrected by an invitation: un-suspending is an admin's
+        deliberate act on the portal."""
         now = now_iso()
         e = email.strip().lower()
         with self.engine.begin() as conn:
@@ -430,14 +436,18 @@ class Store:
                         "phone": phone.strip() or existing["phone"], "notes": notes.strip() or existing["notes"], "updated_at": now}
                 if existing["status"] == "declined":
                     vals["status"] = "pending"
+                if approve and existing["status"] in ("pending", "declined"):
+                    vals.update(status="approved", approved_at=now, approved_by=approved_by or "invitation")
                 if invite_token:
                     vals["invite_token"] = invite_token
                 conn.execute(sa.update(buyers).where(buyers.c.id == existing["id"]).values(**vals))
                 bid = int(existing["id"])
             else:
                 res = conn.execute(buyers.insert().values(company=company.strip(), contact=contact.strip(), email=e, phone=phone.strip(),
-                                                          notes=notes.strip(), status="pending", invite_token=invite_token,
-                                                          created_at=now, updated_at=now))
+                                                          notes=notes.strip(), status="approved" if approve else "pending",
+                                                          invite_token=invite_token, created_at=now, updated_at=now,
+                                                          approved_at=now if approve else None,
+                                                          approved_by=(approved_by or "invitation") if approve else None))
                 bid = int(res.inserted_primary_key[0])
             if invite_token:
                 conn.execute(sa.update(signup_invites).where(signup_invites.c.token == invite_token, signup_invites.c.used_at.is_(None))

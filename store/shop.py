@@ -158,25 +158,48 @@ def login_token(token: str):
 
 # --- sign-up (from an admin's invitation, or the open application form) ---------
 
-def _notify_admins_signup(ctx, b: Mapping[str, Any]) -> None:
+def _notify_admins_signup(ctx, b: Mapping[str, Any], *, invited: bool) -> None:
+    """Tell the admins.  An invited sign-up is an FYI — it is already approved —
+    and an open application is a queue item."""
+    subject = (f"Closeout sheet: {b['company']} signed up from your invitation" if invited
+               else f"Closeout sheet sign-up to approve: {b['company']}")
+    tail = (("\nThey were invited, so they are approved and on the sheet already. Suspend them here if that is wrong: "
+             if invited else "\nApprove or decline: ")
+            + f"{ctx.cfg.base_url}{url_for('admin.home')}\n")
     for to in ctx.cfg.admin_list:
-        mail.send(ctx.cfg, to=to, subject=f"Closeout sheet sign-up to approve: {b['company']}",
+        mail.send(ctx.cfg, to=to, subject=subject,
                   body=(f"{b['company']} / {b['contact']} <{b['email']}>{(' · ' + b['phone']) if b.get('phone') else ''}\n"
                         + (f"Notes: {b['notes']}\n" if b.get("notes") else "")
-                        + f"\nApprove or decline: {ctx.cfg.base_url}{url_for('admin.home')}\n"))
+                        + tail))
 
 
 def _signup(ctx, form, invite: Mapping[str, Any] | None):
+    """Create (or refresh) the buyer behind a sign-up.
+
+    An invitation *is* the approval (JJ, 2026-09-03): an admin chose the address,
+    and opening the link proves the buyer holds it, so the account is approved on
+    the spot and the sign-up ends on the sheet instead of in a queue.  The open
+    ``/apply`` form still waits for a human, and a suspended buyer is never
+    reactivated by an invitation.
+    """
     payload = {k: (form.get(k) or "").strip() for k in ("company", "contact", "email", "phone", "notes")}
     if invite:
         payload["email"] = invite["email"]          # the invitation fixes the address
     if not payload["company"] or not payload["contact"] or not _EMAIL.match(payload["email"]):
         return None, payload
     b = ctx.store.create_buyer(company=payload["company"], contact=payload["contact"], email=payload["email"],
-                               phone=payload["phone"], notes=payload["notes"], invite_token=(invite or {}).get("token"))
-    _notify_admins_signup(ctx, b)
-    mail.send(ctx.cfg, to=b["email"], subject="Received: your request for the Gerson closeout offer sheet",
-              body=f"Thank you. The Gerson team reviews requests by hand; you will get a sign-in link by email once {b['company']} is approved.\n")
+                               phone=payload["phone"], notes=payload["notes"], invite_token=(invite or {}).get("token"),
+                               approve=bool(invite), approved_by=(invite or {}).get("created_by") or "invitation")
+    _notify_admins_signup(ctx, b, invited=bool(invite))
+    if b["status"] == "approved":
+        mail.send(ctx.cfg, to=b["email"], subject="You are in: the Gerson closeout offer sheet",
+                  body=(f"Your account for {b['company']} is active — nothing to wait for.\n\n"
+                        f"Open the offer sheet: {ctx.cfg.base_url}/\n\n"
+                        f"To sign in later go to {ctx.cfg.base_url}/login and enter {b['email']}: we email a one-time "
+                        f"link each time, so there is no password to keep.\n"))
+    else:
+        mail.send(ctx.cfg, to=b["email"], subject="Received: your request for the Gerson closeout offer sheet",
+                  body=f"Thank you. The Gerson team reviews requests by hand; you will get a sign-in link by email once {b['company']} is approved.\n")
     return b, payload
 
 
@@ -198,7 +221,12 @@ def join_post(token: str):
     if not b:
         flash("Company, your name and a valid email are required.")
         return render_template("join.html", form=form, lock_email=True), 400
-    return render_template("join.html", submitted=True, email=b["email"])
+    if b["status"] != "approved":        # only a suspended account can land here
+        return render_template("join.html", submitted=True, email=b["email"])
+    session.clear()                      # opening the invitation proved they hold the address
+    session.permanent = True
+    session["buyer_id"] = b["id"]
+    return redirect(url_for("shop.home"))
 
 
 @bp.post("/logout")

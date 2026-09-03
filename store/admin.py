@@ -1,5 +1,9 @@
-"""Buyer admin portal (JJ, 2026-09-02): invite buyers by email, approve the
-ones who sign up, suspend anyone who should no longer see the sheet.
+"""Buyer admin portal (JJ, 2026-09-02): invite buyers by email, approve the ones
+who apply on their own, suspend anyone who should no longer see the sheet.
+
+An invitation carries the approval with it (JJ, 2026-09-03): whoever an admin
+invites is approved the moment they finish signing up, and lands on the sheet.
+The approval queue below is for the open ``/apply`` form only.
 
 Admins are the addresses in ``STORE_ADMIN_EMAILS``; they sign in with the same
 one-time email link as buyers.  Nothing here touches NetSuite or AOI: who may
@@ -50,7 +54,7 @@ def send_invite_email(ctx, invite: dict) -> bool:
     body = (f"You are invited to Gerson's closeout offer sheet: every closeout item at original wholesale, "
             f"and you make the offer.\n\n"
             + (f"{invite['note']}\n\n" if invite.get("note") else "")
-            + f"Sign up here (takes a minute; the Gerson team approves accounts by hand):\n{link}\n\n"
+            + f"Sign up here — it takes a minute and you are on the sheet as soon as you finish:\n{link}\n\n"
             f"If this did not reach the right person, forward it — the link is for one sign-up.\n")
     return bool(mail.send(ctx.cfg, to=invite["email"], subject="Invitation: Gerson closeout offer sheet", body=body))
 
