@@ -10,7 +10,7 @@
 {% if lines %}
 <form method="post" action="{{ url_for('shop.round_respond', token=rnd.token) }}">
 <table>
-  <tr><th>Item</th><th class="right">Wholesale</th><th class="right">Original retail</th><th class="right">Your offer</th><th class="right">Gerson{% if open %} counter{% endif %}</th><th class="right">Qty</th><th class="right">Extended</th>{% if open %}<th class="right">Your reply qty</th><th class="right">Your reply price</th><th class="right">Your margin</th>{% endif %}</tr>
+  <tr><th>Item</th><th class="right">Wholesale</th><th class="right">Suggested retail</th><th class="right">Your offer</th><th class="right">Gerson{% if open %} counter{% endif %}</th><th class="right">Qty</th><th class="right">Extended</th>{% if open %}<th class="right">Your reply qty</th><th class="right">Your reply price</th><th class="right">Your margin</th>{% endif %}</tr>
   {% for l in lines %}
   <tr>
     <td><b>{{ l.description or l.sku }}</b><br><span class="muted">{{ l.sku }}</span></td>
@@ -33,7 +33,7 @@
 {% if open %}
 <div class="bar">
   <label class="muted">Your target margin <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
-  <span class="muted">Against original retail, worked out in your browser as you type your reply. We never see it.</span>
+  <span class="muted">Against suggested retail, worked out in your browser as you type your reply. We never see it.</span>
 </div>
 {% endif %}
 {% if open %}

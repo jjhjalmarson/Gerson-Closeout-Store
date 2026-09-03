@@ -269,7 +269,7 @@ class SheetTest(StoreTestCase):
 
 
 class RetailTest(unittest.TestCase):
-    """Original retail: wholesale at a 60% margin, landed on a .99 price point."""
+    """Suggested retail: wholesale at a 60% margin, landed on a .99 price point."""
 
     def test_price_points(self):
         self.assertEqual(D.retail_price(305.00), 762.99)      # 762.50 rounds up to the .99 above
@@ -406,16 +406,16 @@ class OfferTest(StoreTestCase):
         """The buyer's own arithmetic: what it retails for, and a target margin
         that turns their offer box into "what can I pay"."""
         html = self.client.get("/").get_data(as_text=True)
-        self.assertIn("Original retail", html)
+        self.assertIn("Suggested retail", html)
         self.assertIn('data-retail="62.99"', html)            # L1 wholesale $25.19 -> $62.99
         self.assertIn('id="targetMargin"', html)
         self.assertIn("Your margin", html)
         item = self.client.get("/item/L1").get_data(as_text=True)
-        self.assertIn("original retail", item)
+        self.assertIn("suggested retail", item)
         review = self.client.post("/offer/line", json={"sku": "L1", "qty": 24, "price": 10})
         self.assertEqual(review.status_code, 200)
         page = self.client.get("/offer").get_data(as_text=True)
-        self.assertIn("Original retail", page); self.assertIn('id="targetMargin"', page)
+        self.assertIn("Suggested retail", page); self.assertIn('id="targetMargin"', page)
         # and nothing about our side of it ever appears on a buyer page
         self.assertNotIn("cost", page.lower().replace("closeout", ""))
 
