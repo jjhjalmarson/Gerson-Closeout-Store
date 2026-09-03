@@ -19,10 +19,13 @@ import functools
 import io
 import re
 import secrets
+import time
 from typing import Any, Mapping
 
 from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, render_template, request, session,
                    url_for)
+
+from werkzeug.security import check_password_hash
 
 from . import mail
 from .db import ALL_COMPANIES
@@ -118,10 +121,45 @@ def _login_subject(ctx, email: str) -> str:
     return ""
 
 
+# Password attempts per address in this worker: after too many misses the
+# password path closes for a while (the emailed link still works). A soft brake,
+# not a lock: each gunicorn worker keeps its own count.
+_PW_FAILS: dict[str, list[float]] = {}
+_PW_MAX_FAILS, _PW_WINDOW_S = 8, 15 * 60
+
+
+def _password_allowed(email: str) -> bool:
+    now = time.time()
+    recent = [t for t in _PW_FAILS.get(email, []) if now - t < _PW_WINDOW_S]
+    _PW_FAILS[email] = recent
+    return len(recent) < _PW_MAX_FAILS
+
+
+def _password_login(ctx, email: str, password: str) -> bool:
+    """Admins only (JJ, 2026-09-03): a link every time was a pain. True = signed in."""
+    if email not in ctx.cfg.admin_list or not _password_allowed(email):
+        return False
+    h = ctx.store.admin_password_hash(email)
+    if h and check_password_hash(h, password):
+        _PW_FAILS.pop(email, None)
+        session.clear()
+        session.permanent = True
+        session["admin_email"] = email
+        return True
+    _PW_FAILS.setdefault(email, []).append(time.time())
+    return False
+
+
 @bp.post("/login")
 def login_post():
     email = (request.form.get("email") or "").strip().lower()
+    password = request.form.get("password") or ""
     ctx = _ctx()
+    if password:
+        if _EMAIL.match(email) and _password_login(ctx, email, password):
+            return redirect(url_for("admin.home"))
+        flash("That email and password do not match. Staff who have not set a password yet: leave it blank for a sign-in link.")
+        return render_template("login.html", email=email, website_url=ctx.cfg.website_url)
     if _EMAIL.match(email):
         subject = _login_subject(ctx, email)
         if subject:

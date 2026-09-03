@@ -10,8 +10,13 @@
     <p>This sheet is <b>by invitation</b>. If Gerson invited you, use the sign-up link in that email; once you are approved you sign in here.</p>
     <p class="muted">Approved buyers: enter your email for a one-time sign-in link.</p>
     <form method="post">
-      <label>Email<br><input type="email" name="email" required style="width:100%"></label>
-      <div style="margin-top:.8rem"><button type="submit">Email me a sign-in link</button></div>
+      <label>Email<br><input type="email" name="email" required style="width:100%" value="{{ email or '' }}"></label>
+      <details style="margin-top:.6rem" {% if email %}open{% endif %}>
+        <summary class="muted">Gerson staff: sign in with a password</summary>
+        <label style="display:block;margin-top:.4rem">Password<br><input type="password" name="password" autocomplete="current-password" style="width:100%"></label>
+        <p class="muted" style="margin:.3rem 0 0">Leave blank to get a sign-in link by email instead.</p>
+      </details>
+      <div style="margin-top:.8rem"><button type="submit">Sign in</button></div>
     </form>
     <p class="muted" style="margin-top:1rem">Not invited yet? <a href="{{ url_for('shop.apply') }}">Request access</a>.</p>
   {% endif %}

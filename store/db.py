@@ -84,6 +84,17 @@ login_tokens = sa.Table(
     sa.Column("used_at", sa.String(32)),
 )
 
+# Admin passwords (JJ, 2026-09-03): an admin signs in by link once, sets a password
+# on the portal, and types it from then on. Hash only (werkzeug), keyed by the
+# address in STORE_ADMIN_EMAILS; removing the address from the env ends access
+# whatever is stored here.
+admin_credentials = sa.Table(
+    "admin_credentials", metadata,
+    sa.Column("email", sa.String(200), primary_key=True),
+    sa.Column("password_hash", sa.String(300), nullable=False),
+    sa.Column("updated_at", sa.String(32), nullable=False),
+)
+
 # Buyers who signed up on the store (JJ, 2026-09-02): approved by an admin here,
 # never tied to a NetSuite customer, every company's SKUs visible.
 buyers = sa.Table(
@@ -431,6 +442,18 @@ class Store:
             conn.execute(sa.update(login_tokens).where(login_tokens.c.token == token).values(used_at=now))
         subject = row["subject"] or (f"cust:{row['customer_id']}" if row["customer_id"] else "")
         return {"subject": subject, "email": row["email"]} if subject else None
+
+    def set_admin_password_hash(self, email: str, password_hash: str) -> None:
+        e = email.strip().lower()
+        with self.engine.begin() as conn:
+            conn.execute(sa.delete(admin_credentials).where(admin_credentials.c.email == e))
+            conn.execute(admin_credentials.insert().values(email=e, password_hash=password_hash, updated_at=now_iso()))
+
+    def admin_password_hash(self, email: str) -> str:
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.select(admin_credentials.c.password_hash)
+                               .where(admin_credentials.c.email == email.strip().lower())).first()
+        return row[0] if row else ""
 
     # --- buyers who signed up here + their invitations ----------------------
 

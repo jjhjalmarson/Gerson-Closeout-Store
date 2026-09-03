@@ -605,6 +605,60 @@ class SignupAdminTest(StoreTestCase):
         self.client.post("/login", data={"email": "nobody@nowhere.test"})       # unknown: no link, same page
         self.assertEqual([m["to"] for m in self.sent], ["admin@gerson.test"])
 
+    def test_admin_sets_a_password_and_signs_in_without_a_link(self):
+        # No password yet: the password path is closed and nothing is emailed.
+        r = self.client.post("/login", data={"email": "admin@gerson.test", "password": "not-set-yet-123"})
+        self.assertEqual((r.status_code, self.sent), (200, []))
+        self.assertIn("do not match", r.get_data(as_text=True))
+        self.assertEqual(self.client.get("/admin/").status_code, 404)
+        # Sign in by link once, set a password on the portal.
+        self.admin_login()
+        html = self.client.get("/admin/").get_data(as_text=True)
+        self.assertIn("set a password so you can skip the emailed link", html)
+        r = self.client.post("/admin/password", data={"password": "short", "password2": "short"}, follow_redirects=True)
+        self.assertIn("at least 12 characters", r.get_data(as_text=True))
+        r = self.client.post("/admin/password", data={"password": "correct-horse-battery", "password2": "correct-horse-battery-x"}, follow_redirects=True)
+        self.assertIn("do not match", r.get_data(as_text=True))
+        r = self.client.post("/admin/password", data={"password": "correct-horse-battery", "password2": "correct-horse-battery"}, follow_redirects=True)
+        self.assertIn("Password saved", r.get_data(as_text=True))
+        self.assertIn("password set, change it here", r.get_data(as_text=True))
+        self.client.post("/logout")
+        self.assertEqual(self.client.get("/admin/").status_code, 404)
+        # Wrong password: no session, no email. Right password: straight to the portal.
+        sent_before = len(self.sent)
+        r = self.client.post("/login", data={"email": "Admin@Gerson.test", "password": "wrong-wrong-wrong"})
+        self.assertEqual((r.status_code, self.client.get("/admin/").status_code, len(self.sent)), (200, 404, sent_before))
+        r = self.client.post("/login", data={"email": "Admin@Gerson.test", "password": "correct-horse-battery"})
+        self.assertEqual((r.status_code, r.headers["Location"].endswith("/admin/")), (302, True))
+        self.assertIn("admin@gerson.test", self.client.get("/admin/").get_data(as_text=True))
+        self.assertEqual(len(self.sent), sent_before)
+        # Blank password still means "email me a link", for admins and buyers alike.
+        self.client.post("/logout")
+        self.client.post("/login", data={"email": "admin@gerson.test", "password": ""})
+        self.assertEqual(len(self.sent), sent_before + 1)
+
+    def test_password_never_signs_in_a_non_admin_and_throttles_after_misses(self):
+        from store import shop as S
+        self.ingest("customers", CUSTOMERS)
+        # An allowlisted buyer typing a password gets neither a session nor a link.
+        r = self.client.post("/login", data={"email": "donna-n@live.com", "password": "whatever-whatever"})
+        self.assertEqual((r.status_code, self.sent), (200, []))
+        self.assertEqual(self.client.get("/").status_code, 302)
+        # A stranger's password can only ever be a password, and only for an admin address.
+        self.store.set_admin_password_hash("donna-n@live.com", "pbkdf2:sha256:1$x$y")   # not in STORE_ADMIN_EMAILS
+        r = self.client.post("/login", data={"email": "donna-n@live.com", "password": "whatever-whatever"})
+        self.assertEqual(self.client.get("/admin/").status_code, 404)
+        # Eight misses close the password path for that address; the link still works.
+        self.admin_login(); self.client.post("/admin/password", data={"password": "correct-horse-battery", "password2": "correct-horse-battery"}); self.client.post("/logout")
+        S._PW_FAILS.clear()
+        for _ in range(S._PW_MAX_FAILS):
+            self.client.post("/login", data={"email": "admin@gerson.test", "password": "nope-nope-nope"})
+        r = self.client.post("/login", data={"email": "admin@gerson.test", "password": "correct-horse-battery"})
+        self.assertEqual((r.status_code, self.client.get("/admin/").status_code), (200, 404))
+        self.admin_login()
+        self.assertEqual(self.client.get("/admin/").status_code, 200)
+        S._PW_FAILS.clear()
+
     def test_invited_signup_is_approved_and_signed_in_at_once(self):
         self.admin_login()
         r = self.client.post("/admin/invite", data={"email": "Pat@TJX.test", "company": "TJX", "note": "Looking forward to it."}, follow_redirects=True)
