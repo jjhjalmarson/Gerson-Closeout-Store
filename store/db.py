@@ -565,51 +565,77 @@ class Store:
         "value": ((products.c.wholesale * products.c.qty_available).desc(), products.c.sku),   # biggest lots first
     }
 
+    # The smallest lot a buyer can take: an inner pack where there is one, else
+    # the case. "Cases available" is counted in these, which is how a buyer
+    # thinks about depth -- 240 pieces of a six-pack is 40 cases (JJ, 2026-09-03).
+    SMALLEST_PACK = sa.func.coalesce(sa.func.nullif(products.c.inner_pack, 0),
+                                     sa.func.nullif(products.c.case_pack, 0), 1)
+
     @staticmethod
-    def _product_filter(*, brand=None, category=None, subcategory=None, q=None, companies=None):
+    def _in_any(col, values):
+        """One value or several: brands, categories and subcategories are all
+        multi-select, and an empty choice means no filter at all."""
+        vals = [v for v in ([values] if isinstance(values, str) else list(values or [])) if v]
+        if not vals:
+            return None
+        return col == vals[0] if len(vals) == 1 else col.in_(vals)
+
+    @classmethod
+    def _product_filter(cls, *, brand=None, category=None, subcategory=None, q=None, companies=None,
+                        min_units=None, min_cases=None):
         """Every word of ``q`` must appear somewhere in SKU, description, brand,
         category or subcategory; ``companies`` limits to the subsidiaries the
-        buyer holds an account with (or the invite covers)."""
+        buyer holds an account with (or the invite covers). ``brand`` /
+        ``category`` / ``subcategory`` each take one value or a list."""
         conds = [products.c.active.is_(True), products.c.qty_available > 0]
         if companies is not None:
             conds.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
-        if brand:
-            conds.append(products.c.brand == brand)
-        if category:
-            conds.append(products.c.category == category)
-        if subcategory:
-            conds.append(products.c.subcategory == subcategory)
+        for col, val in ((products.c.brand, brand), (products.c.category, category),
+                         (products.c.subcategory, subcategory)):
+            cond = cls._in_any(col, val)
+            if cond is not None:
+                conds.append(cond)
+        if min_units:
+            conds.append(products.c.qty_available >= int(min_units))
+        if min_cases:
+            conds.append(products.c.qty_available >= int(min_cases) * cls.SMALLEST_PACK)
         for word in (q or "").split():
             like = f"%{word}%"
             conds.append(sa.or_(products.c.sku.ilike(like), products.c.description.ilike(like), products.c.brand.ilike(like),
                                 products.c.category.ilike(like), products.c.subcategory.ilike(like)))
         return conds
 
-    def list_products(self, *, brand: str | None = None, category: str | None = None, subcategory: str | None = None,
-                      q: str | None = None, sort: str = "default",
-                      companies: Iterable[str] | None = None, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+    def list_products(self, *, brand=None, category=None, subcategory=None,
+                      q: str | None = None, sort: str = "default", min_units: int | None = None,
+                      min_cases: int | None = None, companies: Iterable[str] | None = None,
+                      limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
-                                                                q=q, companies=companies))
+                                                               q=q, companies=companies, min_units=min_units,
+                                                               min_cases=min_cases))
         stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
 
-    def count_products(self, *, brand: str | None = None, category: str | None = None, subcategory: str | None = None,
-                       q: str | None = None, companies: Iterable[str] | None = None) -> int:
+    def count_products(self, *, brand=None, category=None, subcategory=None, q: str | None = None,
+                       min_units: int | None = None, min_cases: int | None = None,
+                       companies: Iterable[str] | None = None) -> int:
         stmt = sa.select(sa.func.count()).select_from(products).where(
-            *self._product_filter(brand=brand, category=category, subcategory=subcategory, q=q, companies=companies))
+            *self._product_filter(brand=brand, category=category, subcategory=subcategory, q=q, companies=companies,
+                                  min_units=min_units, min_cases=min_cases))
         with self.engine.connect() as conn:
             return int(conn.execute(stmt).scalar() or 0)
 
-    def facets(self, *, brand: str | None = None, category: str | None = None,
+    def facets(self, *, brand=None, category=None,
                companies: Iterable[str] | None = None) -> dict[str, list[Any]]:
         """Filter choices that still return something: categories narrow to the
-        chosen brand, subcategories to brand + category."""
+        chosen brands, subcategories to brands + categories."""
         base = [products.c.active.is_(True), products.c.qty_available > 0]
         if companies is not None:
             base.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
-        in_brand = base + ([products.c.brand == brand] if brand else [])
-        in_cat = in_brand + ([products.c.category == category] if category else [])
+        brand_cond = self._in_any(products.c.brand, brand)
+        cat_cond = self._in_any(products.c.category, category)
+        in_brand = base + ([brand_cond] if brand_cond is not None else [])
+        in_cat = in_brand + ([cat_cond] if cat_cond is not None else [])
 
         def distinct(col, conds, desc=False):
             order = col.desc() if desc else col
@@ -874,6 +900,10 @@ def _prod(r) -> dict[str, Any]:
         if d.get(k) is not None:
             d[k] = float(d[k])
     d["msrp"] = msrp_price(d.get("wholesale") or 0.0)
+    # Depth in the unit a buyer thinks in: the smallest lot they can take.
+    sp = int(d.get("inner_pack") or 0) or int(d.get("case_pack") or 0) or 1
+    d["smallest_pack"] = sp
+    d["cases_available"] = int(d.get("qty_available") or 0) // sp
     d["order_unit"], d["unit_label"] = order_unit(d)
     return d
 
