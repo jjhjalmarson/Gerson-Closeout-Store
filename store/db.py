@@ -847,7 +847,7 @@ def _round(r) -> dict[str, Any]:
     return d
 
 
-# Original retail: what the item carries at a normal retail margin off the
+# Suggested retail: what the item carries at a normal retail margin off the
 # published wholesale, landed on a .99 price point the way a shelf tag would be
 # (JJ, 2026-09-03). It is arithmetic on the wholesale the buyer can already see,
 # so it discloses nothing new -- it is there to anchor the offer against what

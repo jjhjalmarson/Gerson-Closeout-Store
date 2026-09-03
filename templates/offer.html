@@ -9,7 +9,7 @@
 <form method="post" action="{{ url_for('shop.offer_set') }}">
 <input type="hidden" name="next" value="{{ url_for('shop.offer') }}">
 <table>
-  <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Original retail</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Your margin</th><th class="right">Extended</th></tr></thead>
+  <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Suggested retail</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Your margin</th><th class="right">Extended</th></tr></thead>
   {% for l in lines %}
   <tr>
     <td><b>{{ l.description }}</b><br><span class="muted">{{ l.sku }} · {{ l.brand }}{% if l.category %} · {{ l.category }}{% endif %}</span></td>
@@ -33,7 +33,7 @@
 </table>
 <div class="bar">
   <label class="muted">Your target margin <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
-  <span class="muted">Margins are against original retail, and are yours alone — we never see them.</span>
+  <span class="muted">Margins are against suggested retail, and are yours alone — we never see them.</span>
 </div>
 <div class="bar">
   <button type="submit" class="sec">Update lines</button>
