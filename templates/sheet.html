@@ -3,34 +3,47 @@
 {% block body %}
 <h1>Closeout offer sheet</h1>
 <p class="muted">Original wholesale and pack sizes are shown for every item. Enter a quantity and the unit price you are offering — lines save as you type — then review and submit when you are done. Our team replies by email with an acceptance or a counter. Quantities snap to whole packs.</p>
-<form method="get" class="bar" id="filters">
-  {# Multi-select: pick as many brands or categories as you like. No auto-submit
-     here -- it would fire on the first click and throw away the rest. #}
-  <label class="muted">Brands<br>
-    <select name="brand" multiple size="{{ [facets.brands|length, 4]|min }}" style="min-width:11rem">
-      {% for b in facets.brands %}<option value="{{ b }}" {% if b in brand %}selected{% endif %}>{{ b }}</option>{% endfor %}
-    </select></label>
-  <label class="muted">Categories<br>
-    <select name="category" multiple size="{{ [facets.categories|length, 4]|min }}" style="min-width:11rem">
-      {% for c in facets.categories %}<option value="{{ c }}" {% if c in category %}selected{% endif %}>{{ c }}</option>{% endfor %}
-    </select></label>
-  <label class="muted" {% if facets.subcategories|length < 2 and not subcategory %}style="display:none"{% endif %}>Subcategories<br>
-    <select name="subcategory" multiple size="{{ [facets.subcategories|length, 4]|min }}" style="min-width:11rem">
-      {% for c in facets.subcategories %}<option value="{{ c }}" {% if c in subcategory %}selected{% endif %}>{{ c }}</option>{% endfor %}
-    </select></label>
-  <label class="muted">Min units<br><input name="min_units" type="number" min="0" step="1" value="{{ min_units }}" style="width:6rem;text-align:right" placeholder="any"></label>
-  <label class="muted">Min cases<br><input name="min_cases" type="number" min="0" step="1" value="{{ min_cases }}" style="width:6rem;text-align:right" placeholder="any"></label>
-  <select name="sort" onchange="this.form.submit()">
-    <option value="" {% if sort=='default' %}selected{% endif %}>Brand / category</option>
-    <option value="value" {% if sort=='value' %}selected{% endif %}>Biggest lots first</option>
-    <option value="qty" {% if sort=='qty' %}selected{% endif %}>Most available</option>
-    <option value="wholesale_asc" {% if sort=='wholesale_asc' %}selected{% endif %}>Wholesale: low to high</option>
-    <option value="wholesale_desc" {% if sort=='wholesale_desc' %}selected{% endif %}>Wholesale: high to low</option>
-  </select>
-  <input name="q" placeholder="Search: any words in SKU, description, brand, category" value="{{ q }}" style="min-width:18rem">
-  <button type="submit">Apply</button>
-  {% if filtered or sort!='default' %}<a class="btn sec" href="{{ url_for('shop.home') }}">Clear</a>{% endif %}
-  <span class="muted" style="margin-left:auto">{{ total }} item{{ '' if total==1 else 's' }}{% if pages > 1 %} · page {{ page }} of {{ pages }}{% endif %}</span>
+<form method="get" class="filters" id="filters">
+  <div class="fields">
+    {# Multi-select on all three: no auto-submit, because it fires on the first
+       click and throws the rest away. Apply runs the lot. #}
+    <label class="f"><span>Brands</span>
+      <select name="brand" multiple>
+        {% for b in facets.brands %}<option value="{{ b }}" {% if b in brand %}selected{% endif %}>{{ b }}</option>{% endfor %}
+      </select></label>
+    <label class="f"><span>Categories</span>
+      <select name="category" multiple>
+        {% for c in facets.categories %}<option value="{{ c }}" {% if c in category %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      </select></label>
+    <label class="f" {% if facets.subcategories|length < 2 and not subcategory %}style="display:none"{% endif %}><span>Subcategories</span>
+      <select name="subcategory" multiple>
+        {% for c in facets.subcategories %}<option value="{{ c }}" {% if c in subcategory %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      </select></label>
+    <div class="stack">
+      <label class="f"><span>Min units</span>
+        <input class="narrow" name="min_units" type="number" min="0" step="1" value="{{ min_units }}" placeholder="any"></label>
+      <label class="f"><span>Min cases</span>
+        <input class="narrow" name="min_cases" type="number" min="0" step="1" value="{{ min_cases }}" placeholder="any"></label>
+    </div>
+    <div class="stack">
+      <label class="f"><span>Sort by</span>
+        <select name="sort">
+          <option value="" {% if sort=='default' %}selected{% endif %}>Brand / category</option>
+          <option value="value" {% if sort=='value' %}selected{% endif %}>Biggest lots first</option>
+          <option value="qty" {% if sort=='qty' %}selected{% endif %}>Most available</option>
+          <option value="wholesale_asc" {% if sort=='wholesale_asc' %}selected{% endif %}>Wholesale: low to high</option>
+          <option value="wholesale_desc" {% if sort=='wholesale_desc' %}selected{% endif %}>Wholesale: high to low</option>
+        </select></label>
+      <label class="f"><span>Search</span>
+        <input name="q" value="{{ q }}" placeholder="any words in SKU, description, brand"></label>
+    </div>
+  </div>
+  <div class="actions">
+    <button type="submit">Apply</button>
+    {% if filtered or sort != 'default' %}<a class="btn sec" href="{{ url_for('shop.home') }}">Clear</a>{% endif %}
+    <span class="hint grow">Pick as many brands or categories as you like — hold Ctrl (⌘ on a Mac) to add to a selection.</span>
+    <span class="hint">{{ total }} item{{ '' if total == 1 else 's' }}{% if pages > 1 %} · page {{ page }} of {{ pages }}{% endif %}</span>
+  </div>
 </form>
 {% if items %}
 <form method="post" action="{{ url_for('shop.offer_set') }}">

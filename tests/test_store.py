@@ -388,7 +388,20 @@ class OfferTest(StoreTestCase):
         self.assertIn("L1", self.sent[0]["body"]); self.assertIn("37% of $1,400.00 wholesale", self.sent[0]["body"])
         self.assertEqual(self.sent[0]["attachments"][0][0], "offer-OF-1.csv")
         self.assertIn(b"L1,Lantern", self.sent[0]["attachments"][0][1])
-        self.assertIn("We received your offer", self.sent[2]["subject"])
+        # the team's copy carries the buyer and the instructions for the team
+        self.assertIn("Reply to the buyer", self.sent[0]["body"])
+        self.assertIn("sam@ross.test", self.sent[0]["body"])
+        self.assertIn("<table", self.sent[0]["html"]); self.assertIn("$10.00", self.sent[0]["html"])
+        # the buyer's copy is addressed to the buyer: none of that belongs in it
+        buyer_mail = self.sent[2]
+        self.assertIn("We have your offer", buyer_mail["subject"])
+        for staff_only in ("Reply to the buyer", "cost", "floors", "NetSuite", "Invite:"):
+            self.assertNotIn(staff_only, buyer_mail["body"])
+            self.assertNotIn(staff_only, buyer_mail["html"])
+        self.assertIn("Your lines are attached as a CSV", buyer_mail["body"])
+        self.assertIn("acceptance or a counter", buyer_mail["html"])
+        self.assertIn("$520.00", buyer_mail["html"])                                    # their total, in a real table
+        self.assertIn("37% of $1,400.00 wholesale", buyer_mail["html"])
         self.assertEqual(self.store.draft("inv:ross-xyz"), {})                          # draft cleared
         html = self.client.get("/offers").get_data(as_text=True)
         self.assertIn("OF-1", html); self.assertIn("reply comes by email", html)

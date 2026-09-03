@@ -49,7 +49,7 @@ def _graph_token(cfg, session: Any) -> str:
     return _token_cache["value"]
 
 
-def _send_graph(cfg, *, to: str, subject: str, body: str, session: Any = None,
+def _send_graph(cfg, *, to: str, subject: str, body: str, html: str | None = None, session: Any = None,
                 attachments: list[tuple[str, bytes, str]] | None = None) -> bool:
     import base64
     import requests
@@ -58,7 +58,8 @@ def _send_graph(cfg, *, to: str, subject: str, body: str, session: Any = None,
     payload = {
         "message": {
             "subject": subject,
-            "body": {"contentType": "Text", "content": body},
+            "body": ({"contentType": "HTML", "content": html} if html
+                     else {"contentType": "Text", "content": body}),
             "toRecipients": [{"emailAddress": {"address": to}}],
         },
         "saveToSentItems": False,
@@ -77,11 +78,13 @@ def _send_graph(cfg, *, to: str, subject: str, body: str, session: Any = None,
     return True
 
 
-def _send_smtp(cfg, *, to: str, subject: str, body: str,
+def _send_smtp(cfg, *, to: str, subject: str, body: str, html: str | None = None,
                attachments: list[tuple[str, bytes, str]] | None = None) -> bool:
     msg = EmailMessage()
     msg["From"], msg["To"], msg["Subject"] = cfg.mail_from, to, subject
     msg.set_content(body)
+    if html:
+        msg.add_alternative(html, subtype="html")      # text stays as the fallback part
     for name, data, ctype in attachments or []:
         maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
         msg.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream", filename=name)
@@ -93,16 +96,19 @@ def _send_smtp(cfg, *, to: str, subject: str, body: str,
     return True
 
 
-def send(cfg, *, to: str, subject: str, body: str, session: Any = None,
+def send(cfg, *, to: str, subject: str, body: str, html: str | None = None, session: Any = None,
          attachments: list[tuple[str, bytes, str]] | None = None) -> bool:
-    """Send one plain-text email, optionally with ``[(filename, bytes, mime)]``
-    attachments. Never raises to the caller: a login attempt must not leak
-    whether mail worked. Returns True on success."""
+    """Send one email, optionally with ``[(filename, bytes, mime)]`` attachments.
+    ``body`` is the plain-text version and is always required: with ``html`` it
+    becomes the fallback part, so a text-only client still gets a readable
+    message. Never raises to the caller: a login attempt must not leak whether
+    mail worked. Returns True on success."""
     try:
         if cfg.mail_backend == "graph" and cfg.graph_client_id:
-            return _send_graph(cfg, to=to, subject=subject, body=body, session=session, attachments=attachments)
+            return _send_graph(cfg, to=to, subject=subject, body=body, html=html, session=session,
+                               attachments=attachments)
         if cfg.mail_backend == "smtp" and cfg.smtp_host:
-            return _send_smtp(cfg, to=to, subject=subject, body=body, attachments=attachments)
+            return _send_smtp(cfg, to=to, subject=subject, body=body, html=html, attachments=attachments)
         log.info("MAIL (log backend) to=%s subject=%s attachments=%s\n%s", to, subject,
                  [x[0] for x in attachments or []], body)
         return True
