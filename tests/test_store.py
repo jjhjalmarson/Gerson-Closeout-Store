@@ -506,7 +506,7 @@ class SignupAdminTest(StoreTestCase):
         self.client.post("/login", data={"email": "nobody@nowhere.test"})       # unknown: no link, same page
         self.assertEqual([m["to"] for m in self.sent], ["admin@gerson.test"])
 
-    def test_invite_signup_approve_signin_offer_suspend(self):
+    def test_invited_signup_is_approved_and_signed_in_at_once(self):
         self.admin_login()
         r = self.client.post("/admin/invite", data={"email": "Pat@TJX.test", "company": "TJX", "note": "Looking forward to it."}, follow_redirects=True)
         self.assertIn("Invitation sent to pat@tjx.test", r.get_data(as_text=True))
@@ -516,30 +516,22 @@ class SignupAdminTest(StoreTestCase):
         html = self.client.get(join).get_data(as_text=True)
         self.assertIn('value="pat@tjx.test"', html); self.assertIn('value="TJX"', html)
         self.assertEqual(self.client.post(join, data={"company": "TJX", "contact": ""}).status_code, 400)
+        # signing up from an invitation approves the account and opens the sheet:
+        # the admin already decided, so there is no second approval (JJ, 2026-09-03)
         n = len(self.sent)
-        r = self.client.post(join, data={"company": "TJX Companies", "contact": "Pat Buyer", "phone": "555", "notes": "HomeGoods, Marshalls"})
-        self.assertEqual(r.status_code, 200); self.assertIn("Thank you", r.get_data(as_text=True))
-        tos = [m["to"] for m in self.sent[n:]]
-        self.assertEqual(sorted(tos), ["admin@gerson.test", "boss@gerson.test", "pat@tjx.test"])   # admins told, buyer acknowledged
-        self.assertIn("/admin", next(m for m in self.sent[n:] if m["to"] == "boss@gerson.test")["body"])
-        self.assertEqual(self.client.get(join).status_code, 404)                              # one sign-up per invitation
-        # pending buyer cannot sign in yet
-        n = len(self.sent)
-        self.client.post("/login", data={"email": "pat@tjx.test"})
-        self.assertEqual(len(self.sent), n)
-        # admin approves -> sign-in link
-        b = self.store.buyer_for_email("pat@tjx.test")
-        self.assertEqual((b["status"], b["company"], b["contact"], b["invite_token"] is not None), ("pending", "TJX Companies", "Pat Buyer", True))
-        html = self.client.get("/admin/").get_data(as_text=True)
-        self.assertIn("Waiting for approval", html); self.assertIn("TJX Companies", html)
-        r = self.client.post(f"/admin/buyers/{b['id']}/status", data={"status": "approved"}, follow_redirects=True)
-        self.assertIn("approved; sign-in link sent", r.get_data(as_text=True))
-        self.assertEqual(self.store.buyer(b["id"])["approved_by"], "admin@gerson.test")
-        signin = self._link(self.sent[-1]["body"], "/login/")
-        # the buyer signs in on another client and sees every company's SKUs
         buyer = self.app.test_client()
-        r = buyer.get(signin)
-        self.assertEqual(r.status_code, 302)
+        r = buyer.post(join, data={"company": "TJX Companies", "contact": "Pat Buyer", "phone": "555", "notes": "HomeGoods, Marshalls"})
+        self.assertEqual((r.status_code, r.headers["Location"].endswith("/")), (302, True))
+        tos = [m["to"] for m in self.sent[n:]]
+        self.assertEqual(sorted(tos), ["admin@gerson.test", "boss@gerson.test", "pat@tjx.test"])   # admins told, buyer welcomed
+        self.assertIn("approved and on the sheet already", next(m for m in self.sent[n:] if m["to"] == "boss@gerson.test")["body"])
+        self.assertIn("is active", next(m for m in self.sent[n:] if m["to"] == "pat@tjx.test")["body"])
+        self.assertEqual(self.client.get(join).status_code, 404)                              # one sign-up per invitation
+        b = self.store.buyer_for_email("pat@tjx.test")
+        self.assertEqual((b["status"], b["company"], b["contact"], b["approved_by"], b["invite_token"] is not None),
+                         ("approved", "TJX Companies", "Pat Buyer", "admin@gerson.test", True))
+        html = self.client.get("/admin/").get_data(as_text=True)
+        self.assertIn("Nobody is waiting", html); self.assertIn("TJX Companies", html)         # no approval queued
         html = buyer.get("/").get_data(as_text=True)
         self.assertIn("TJX Companies", html); self.assertIn("Lantern", html); self.assertIn("Tree", html); self.assertIn("Sign out", html)
         buyer.post("/offer/line", json={"sku": "L1", "qty": 24, "price": 10})
@@ -556,6 +548,11 @@ class SignupAdminTest(StoreTestCase):
         self.assertEqual(buyer.get("/").status_code, 302)
         html = self.client.get("/admin/").get_data(as_text=True)
         self.assertIn("Reactivate", html); self.assertIn(">1<", html)                        # offers count
+        # a fresh invitation never reactivates a suspended buyer: that is an admin's act
+        inv3 = self.store.create_signup_invite("pat@tjx.test", created_by="admin@gerson.test")
+        r = self.app.test_client().post(f"/join/{inv3['token']}", data={"company": "TJX Companies", "contact": "Pat Buyer"})
+        self.assertEqual(r.status_code, 200); self.assertIn("not active", r.get_data(as_text=True))
+        self.assertEqual(self.store.buyer(b["id"])["status"], "suspended")
         # declined sign-ups can apply again; withdrawn invitations die
         self.client.post(f"/admin/buyers/{b['id']}/status", data={"status": "declined"})
         self.store.create_buyer(company="TJX", contact="Pat", email="pat@tjx.test")
