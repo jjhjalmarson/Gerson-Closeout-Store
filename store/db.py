@@ -91,6 +91,11 @@ buyers = sa.Table(
     sa.Column("phone", sa.String(60), default=""),
     sa.Column("notes", sa.Text, default=""),
     sa.Column("status", sa.String(20), nullable=False, default="pending"),   # pending | approved | suspended | declined
+    # Which lane AOI prices this account against (brief S6). Set by an admin on
+    # approval, never by the buyer: a regional retailer calling itself a
+    # liquidator to reach the bottom floor is the obvious exploit. Defaults to
+    # the strictest lane, so an unclassified account never gets the lowest floor.
+    sa.Column("buyer_class", sa.String(20), nullable=False, default="regional"),
     sa.Column("invite_token", sa.String(64)),
     sa.Column("created_at", sa.String(32), nullable=False),
     sa.Column("approved_at", sa.String(32)),
@@ -122,6 +127,7 @@ invites = sa.Table(
     sa.Column("email", sa.String(200), default=""),
     sa.Column("companies_json", sa.Text, nullable=False, default="[]"),   # subsidiaries whose SKUs they see
     sa.Column("expires_at", sa.String(32)),
+    sa.Column("buyer_class", sa.String(20), nullable=False, default="regional"),   # set in AOI, rides the feed
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
@@ -200,6 +206,17 @@ feed_runs = sa.Table(
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# The lanes AOI prices against. "liquidator" carries the lowest floor by far, so
+# anything unrecognised falls back to "regional", never to the loosest lane.
+BUYER_CLASSES: tuple[str, ...] = ("independent", "regional", "liquidator")
+DEFAULT_BUYER_CLASS = "regional"
+
+
+def _clean_class(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    return v if v in BUYER_CLASSES else DEFAULT_BUYER_CLASS
 
 
 def make_engine(url: str) -> Engine:
@@ -318,7 +335,8 @@ class Store:
             comps = [str(c) for c in (it.get("companies") or []) if str(c) in COMPANY_LABELS]
             rows.append({"token": tok, "label": str(it.get("label") or ""), "contact": str(it.get("contact") or ""),
                          "email": str(it.get("email") or "").strip().lower(), "companies_json": json.dumps(comps),
-                         "expires_at": (str(it.get("expires_at") or "")[:32] or None), "active": True, "updated_at": now})
+                         "expires_at": (str(it.get("expires_at") or "")[:32] or None), "active": True, "updated_at": now,
+                         "buyer_class": _clean_class(it.get("buyer_class"))})
         with self.engine.begin() as conn:
             conn.execute(sa.update(invites).values(active=False))
             _upsert(conn, invites, rows, "token")
@@ -471,13 +489,24 @@ class Store:
         with self.engine.connect() as conn:
             return [dict(r) for r in conn.execute(stmt).mappings().all()]
 
-    def set_buyer_status(self, buyer_id: int, status: str, *, by: str = "") -> None:
+    def set_buyer_status(self, buyer_id: int, status: str, *, by: str = "", buyer_class: str | None = None) -> None:
         now = now_iso()
         vals: dict[str, Any] = {"status": status, "updated_at": now}
         if status == "approved":
             vals.update(approved_at=now, approved_by=by)
+        if buyer_class is not None:
+            vals["buyer_class"] = _clean_class(buyer_class)
         with self.engine.begin() as conn:
             conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id)).values(**vals))
+
+    def set_buyer_class(self, buyer_id: int, buyer_class: str) -> str:
+        """The governed field (brief S6): an admin's call, never the buyer's.
+        Returns what was actually stored."""
+        cls = _clean_class(buyer_class)
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id))
+                         .values(buyer_class=cls, updated_at=now_iso()))
+        return cls
 
     def buyer_offer_counts(self) -> dict[str, int]:
         with self.engine.connect() as conn:
@@ -807,7 +836,9 @@ def _ensure_columns(eng: Engine) -> None:
               "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
               "login_tokens": {"subject": "VARCHAR(200)"},
-              "rounds": {"opened_at": "VARCHAR(32)"}}
+              "rounds": {"opened_at": "VARCHAR(32)"},
+              "buyers": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'"},
+              "invites": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'"}}
     with eng.begin() as conn:
         for table, cols in wanted.items():
             have = {c["name"] for c in insp.get_columns(table)}
