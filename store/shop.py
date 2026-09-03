@@ -570,6 +570,9 @@ def notify_buyer_round(ctx, offer: Mapping[str, Any], rnd: Mapping[str, Any]) ->
 @bp.get("/o/<token>")
 def round_view(token: str):
     store, rnd, offer, trail = _round_ctx(token)
+    if rnd["status"] == "open" and not rnd.get("opened_at"):
+        store.mark_round_opened(token)                  # response-time signal for the negotiation memory
+        rnd = store.round(token) or rnd
     theirs = _offer_lines_from_payload(offer["payload"])
     by_sku = {l["sku"]: l for l in theirs}
     lines = [{**l, "your_price": (by_sku.get(l["sku"]) or {}).get("price"), "your_qty": (by_sku.get(l["sku"]) or {}).get("qty")}
@@ -605,7 +608,8 @@ def round_respond(token: str):
             action = "accept"                               # same terms typed back = acceptance
             lines = []
     response = {"offer_ref": offer["id"], "round_id": rnd["round_id"], "token": token, "action": action,
-                "lines": lines, "message": message, "email": rnd.get("buyer_email") or offer["payload"].get("email") or ""}
+                "lines": lines, "message": message, "email": rnd.get("buyer_email") or offer["payload"].get("email") or "",
+                "opened_at": rnd.get("opened_at")}
     if not store.respond_round(token, response):
         flash("This round was already answered.")
         return redirect(url_for("shop.round_view", token=token))

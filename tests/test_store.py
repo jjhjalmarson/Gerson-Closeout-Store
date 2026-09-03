@@ -430,8 +430,10 @@ class NegotiationRoundTest(StoreTestCase):
         self.assertIn("accepted", r.get_data(as_text=True).lower())
         items = [i for i in self.store.pull_outbox() if i["kind"] == "offer_response"]
         self.assertEqual(len(items), 1)
+        opened = self.store.round("tok-2")["opened_at"]
+        self.assertTrue(opened)                                                     # first GET of the link is remembered
         self.assertEqual(items[0]["payload"], {"offer_ref": self.offer_id, "round_id": 7, "token": "tok-2", "action": "accept", "lines": [],
-                                               "message": "Deal.", "email": "sam@ross.test"})
+                                               "message": "Deal.", "email": "sam@ross.test", "opened_at": opened})
         self.assertEqual(items[0]["customer_id"], None)
         # the link is now read-only; a second answer is refused
         html = self.client.get("/o/tok-2").get_data(as_text=True)
