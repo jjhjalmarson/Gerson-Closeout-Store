@@ -31,7 +31,8 @@
   <span class="muted" id="autosaveMsg">Lines save automatically as you type; they stay on your offer until you submit or clear it.</span>
 </div>
 <table>
-  <tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Qty</th><th class="right">Your offer / unit</th></tr>
+  <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Qty</th><th class="right">Your offer / unit</th></tr></thead>
+  <tbody>
   {% for p in items %}
   <tr>
     <td class="thumb"><a href="{{ url_for('shop.item', sku=p.sku) }}">{% if p.image_url %}<img src="{{ url_for('shop.image', sku=p.sku) }}" alt="" loading="lazy">{% else %}<span class="ph"></span>{% endif %}</a></td>
@@ -43,6 +44,7 @@
     <td class="right"><input class="offer" type="number" name="price[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_price }}" min="0" step="0.01" placeholder="$"> <span class="saved" data-saved="{{ p.sku }}"></span></td>
   </tr>
   {% endfor %}
+  </tbody>
 </table>
 <div class="bar">
   <a class="btn" href="{{ url_for('shop.offer') }}">Review offer (<span class="draft-count">{{ draft_count }}</span>)</a>
