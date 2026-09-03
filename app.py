@@ -10,7 +10,7 @@ from flask import Flask
 
 from config import Config, load_config
 from store import admin, ingest, shop
-from store.db import Store, make_engine
+from store.db import Store, make_engine, retail_price
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -36,6 +36,8 @@ def create_app(cfg: Config | None = None) -> Flask:
     app.register_blueprint(ingest.bp)
     app.register_blueprint(shop.bp)
     app.register_blueprint(admin.bp)
+    # Original retail off the published wholesale, for any page that shows a price.
+    app.jinja_env.filters["retail"] = retail_price
 
     @app.after_request
     def _headers(resp):

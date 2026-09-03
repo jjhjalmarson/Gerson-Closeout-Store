@@ -28,10 +28,13 @@
 <div class="bar">
   <a class="btn" href="{{ url_for('shop.offer') }}">Review offer (<span class="draft-count">{{ draft_count }}</span>)</a>
   <button type="submit" class="sec">Save all</button>
-  <span class="muted" id="autosaveMsg">Lines save automatically as you type; they stay on your offer until you submit or clear it.</span>
+  <label class="muted" style="margin-left:auto">Your target margin
+    <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
+  <span class="muted" id="autosaveMsg" style="flex:1 1 100%">Lines save automatically as you type; they stay on your offer until you submit or clear it.
+    Original retail is what the item carries at a normal keystone-plus margin — set your target above and each line shows what you can pay to hit it.</span>
 </div>
 <table>
-  <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Qty</th><th class="right">Your offer / unit</th></tr></thead>
+  <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">Original retail</th><th class="right">Qty</th><th class="right">Your offer / unit</th><th class="right">Your margin</th></tr></thead>
   <tbody>
   {% for p in items %}
   <tr>
@@ -40,8 +43,10 @@
     <td class="muted">{{ pack(p) }}</td>
     <td class="right">{{ p.qty_available }}</td>
     <td class="right price">${{ '%.2f'|format(p.wholesale) }}</td>
+    <td class="right retail" data-retail="{{ '%.2f'|format(p.retail) }}">${{ '%.2f'|format(p.retail) }}</td>
     <td class="right"><input class="qty" type="number" name="qty[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></td>
     <td class="right"><input class="offer" type="number" name="price[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_price }}" min="0" step="0.01" placeholder="$"> <span class="saved" data-saved="{{ p.sku }}"></span></td>
+    <td class="right margin" data-margin="{{ p.sku }}"></td>
   </tr>
   {% endfor %}
   </tbody>
@@ -83,8 +88,10 @@
     inp.addEventListener('input', kick);
     inp.addEventListener('change', () => { clearTimeout(timers[sku]); save(sku); });
   });
+
 })();
 </script>
+{% include "_margin.html" %}
 {% if pages > 1 %}
 <nav class="bar" style="justify-content:center">
   {% if page > 1 %}<a class="btn sec" href="{{ url_for('shop.home', page=page-1, **page_args) }}">&larr; Previous</a>{% endif %}

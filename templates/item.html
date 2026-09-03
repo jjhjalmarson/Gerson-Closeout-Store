@@ -8,7 +8,8 @@
   <div>
     <h1>{{ p.description }}</h1>
     <div class="muted">{{ p.sku }} · {{ p.brand }}{% if p.category %} · {{ p.category }}{% endif %}{% if p.subcategory %} · {{ p.subcategory }}{% endif %}{% if p.upc %} · UPC {{ p.upc }}{% endif %}</div>
-    <p><span class="price" style="font-size:1.4rem">${{ '%.2f'|format(p.wholesale) }}</span> <span class="muted">original wholesale</span></p>
+    <p><span class="price" style="font-size:1.4rem">${{ '%.2f'|format(p.wholesale) }}</span> <span class="muted">original wholesale</span>
+      {% if p.retail %}<br><span class="price">${{ '%.2f'|format(p.retail) }}</span> <span class="muted">original retail</span>{% endif %}</p>
     <p class="muted">{{ pack(p) }} · {{ p.qty_available }} available</p>
     <form method="post" action="{{ url_for('shop.offer_set') }}" class="bar">
       <input type="hidden" name="next" value="{{ url_for('shop.item', sku=p.sku) }}">

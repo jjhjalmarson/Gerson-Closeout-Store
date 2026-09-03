@@ -10,11 +10,13 @@
 {% if lines %}
 <form method="post" action="{{ url_for('shop.round_respond', token=rnd.token) }}">
 <table>
-  <tr><th>Item</th><th class="right">Wholesale</th><th class="right">Your offer</th><th class="right">Gerson{% if open %} counter{% endif %}</th><th class="right">Qty</th><th class="right">Extended</th>{% if open %}<th class="right">Your reply qty</th><th class="right">Your reply price</th>{% endif %}</tr>
+  <tr><th>Item</th><th class="right">Wholesale</th><th class="right">Original retail</th><th class="right">Your offer</th><th class="right">Gerson{% if open %} counter{% endif %}</th><th class="right">Qty</th><th class="right">Extended</th>{% if open %}<th class="right">Your reply qty</th><th class="right">Your reply price</th><th class="right">Your margin</th>{% endif %}</tr>
   {% for l in lines %}
   <tr>
     <td><b>{{ l.description or l.sku }}</b><br><span class="muted">{{ l.sku }}</span></td>
     <td class="right">{% if l.wholesale %}${{ '%.2f'|format(l.wholesale) }}{% endif %}</td>
+    {% set retail = (l.wholesale or 0)|retail %}
+    <td class="right" data-retail="{{ '%.2f'|format(retail) }}" data-price="{{ '%.2f'|format(l.price) }}" data-qty="{{ l.qty }}">{% if retail %}${{ '%.2f'|format(retail) }}{% endif %}</td>
     <td class="right muted">{% if l.your_price %}${{ '%.2f'|format(l.your_price) }}{% if l.your_qty and l.your_qty != l.qty %} × {{ l.your_qty }}{% endif %}{% endif %}</td>
     <td class="right"><b>${{ '%.2f'|format(l.price) }}</b></td>
     <td class="right">{{ l.qty }}</td>
@@ -22,11 +24,18 @@
     {% if open %}
     <td class="right"><input class="qty" type="number" name="qty[{{ l.sku }}]" value="{{ l.qty }}" min="0"></td>
     <td class="right"><input class="offer" type="number" name="price[{{ l.sku }}]" value="{{ '%.2f'|format(l.price) }}" min="0" step="0.01"></td>
+    <td class="right margin"></td>
     {% endif %}
   </tr>
   {% endfor %}
-  <tr><td colspan="5" class="right"><b>Total</b></td><td class="right"><b>${{ '%.2f'|format(rnd.total) }}</b></td>{% if open %}<td colspan="2"></td>{% endif %}</tr>
+  <tr><td colspan="6" class="right"><b>Total</b></td><td class="right"><b>${{ '%.2f'|format(rnd.total) }}</b></td>{% if open %}<td colspan="2"></td><td class="right margin-total"></td>{% endif %}</tr>
 </table>
+{% if open %}
+<div class="bar">
+  <label class="muted">Your target margin <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
+  <span class="muted">Against original retail, worked out in your browser as you type your reply. We never see it.</span>
+</div>
+{% endif %}
 {% if open %}
 <div class="bar">
   <label style="flex:1 1 100%">Message <input name="message" maxlength="2000" style="width:100%" placeholder="optional"></label>
@@ -47,4 +56,5 @@
     {% if r.token != rnd.token %}<a href="{{ url_for('shop.round_view', token=r.token) }}">view</a>{% endif %}</li>
   {% endfor %}
 </ul>
+{% include "_margin.html" %}
 {% endblock %}
