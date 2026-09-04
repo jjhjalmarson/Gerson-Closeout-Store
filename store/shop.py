@@ -772,6 +772,84 @@ def _round_text(offer: Mapping[str, Any], rnd: Mapping[str, Any], link: str) -> 
             "decline": "You are welcome to submit a new offer from the sheet."}.get(rnd["kind"], link)
     return "\n".join(head) + ("\n\n" + "\n".join(rows) if rows else "") + "\n\n" + tail + "\n"
 
+_ROUND_LEDE = {
+    "counter": ("Gerson has countered your offer <b>{ref}</b>.",
+                "The prices below are Gerson's. Answer them on the offer page — accept, counter again, or decline."),
+    "accept": ("Your offer <b>{ref}</b> is accepted.",
+               "Nothing further is needed from you: the Gerson team will enter the order and confirm."),
+    "recorded": ("These are the agreed terms on offer <b>{ref}</b>.",
+                 "The Gerson team will enter the order and confirm."),
+    "decline": ("Your offer <b>{ref}</b> was declined.",
+                "You are welcome to submit a new offer from the sheet."),
+}
+
+
+def _round_html(offer: Mapping[str, Any], rnd: Mapping[str, Any], link: str) -> str:
+    """The round as the same table the offer email uses: what the buyer asked
+    for beside what Gerson answered, and one button to the page that can answer
+    it back. ``link`` is the tokenized round URL."""
+    import html as _h
+    e = lambda v: _h.escape(str(v or ""))                                   # noqa: E731
+    ref = f"OF-{offer['id']}"
+    kind = rnd["kind"]
+    theirs = {l["sku"]: l for l in _offer_lines_from_payload(offer["payload"])}
+
+    rows, units, whsl_total, their_total = [], 0, 0.0, 0.0
+    for l in rnd.get("lines") or []:
+        mine = theirs.get(l["sku"], {})
+        whsl = float(l.get("wholesale") or mine.get("wholesale") or 0.0)
+        units += int(l["qty"])
+        whsl_total += whsl * int(l["qty"])
+        their_total += float(mine.get("price") or 0.0) * int(l["qty"])
+        was = f"${mine['price']:,.2f}" if mine.get("price") else ""
+        if was and mine.get("qty") and int(mine["qty"]) != int(l["qty"]):
+            was += f" × {int(mine['qty']):,}"
+        rows.append(
+            f"<tr><td style=\"{_TD};text-align:left\"><b>{e(l['sku'])}</b>"
+            f"<div style=\"color:#5b6472;font-size:12px\">{e(l.get('description'))}</div></td>"
+            f"<td style=\"{_TD}\">{int(l['qty']):,}</td>"
+            f"<td style=\"{_TD};color:#5b6472\">{f'${whsl:,.2f}' if whsl else ''}</td>"
+            f"<td style=\"{_TD};color:#5b6472\">{was}</td>"
+            f"<td style=\"{_TD}\"><b>${l['price']:,.2f}</b></td>"
+            f"<td style=\"{_TD}\">${int(l['qty']) * l['price']:,.2f}</td></tr>")
+
+    table = ""
+    if rows:
+        n = len(rnd["lines"])
+        note = []
+        if whsl_total > 0:
+            note.append(f"{rnd['total'] / whsl_total * 100:.0f}% of ${whsl_total:,.2f} wholesale")
+        if their_total > 0:
+            note.append(f"your prices: ${their_total:,.2f}")
+        heads = ("Item", "Qty", "Wholesale", "Your offer", "Gerson", "Extended")
+        table = ("<table cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;width:100%;max-width:720px\"><tr>"
+                 + "".join(f"<th style=\"{_TH}" + (";text-align:left" if i == 0 else "") + f"\">{h}</th>"
+                           for i, h in enumerate(heads))
+                 + "</tr>" + "".join(rows)
+                 + f"<tr><td style=\"{_TD};text-align:left;border-bottom:0;padding-top:10px\"><b>Total</b>"
+                   f"<span style=\"color:#5b6472\"> · {n} line{'' if n == 1 else 's'}</span></td>"
+                   f"<td style=\"{_TD};border-bottom:0;padding-top:10px\"><b>{units:,}</b></td>"
+                   f"<td colspan=\"3\" style=\"{_TD};border-bottom:0;padding-top:10px;color:#5b6472\">"
+                 + e(" · ".join(note))
+                 + f"</td><td style=\"{_TD};border-bottom:0;padding-top:10px\"><b>${rnd['total']:,.2f}</b></td></tr>"
+                 + "</table>")
+
+    head, sub = _ROUND_LEDE.get(kind, ("There is an update on your offer <b>{ref}</b>.", ""))
+    lede = (f"<p style=\"margin:0 0 4px;font-size:16px\">{head.format(ref=ref)}</p>"
+            + (f"<p style=\"margin:0 0 18px;color:#5b6472\">{sub}</p>" if sub else "<div style=\"height:18px\"></div>"))
+    msg = (f"<p style=\"margin:0 0 18px;padding:10px 12px;background:#f4f7f9;border-left:3px solid #0e8c8a\">"
+           f"“{e(rnd['message'])}”<span style=\"color:#5b6472\"> — Gerson</span></p>"
+           if rnd.get("message") else "")
+    foot = ""
+    if kind == "counter":
+        foot = (f"<p style=\"margin:22px 0 0\"><a href=\"{e(link)}\" style=\"display:inline-block;background:#0e8c8a;"
+                f"color:#ffffff;text-decoration:none;font:600 14px 'Segoe UI',Arial,sans-serif;padding:11px 20px;"
+                f"border-radius:4px\">Review and answer this counter</a></p>"
+                f"<p style=\"margin:8px 0 0;color:#5b6472;font-size:12px;word-break:break-all\">{e(link)}</p>")
+    return (f"<div style=\"{_MAIL_CSS}\">"
+            f"<p style=\"margin:0 0 14px;font:600 12px 'Segoe UI',Arial,sans-serif;letter-spacing:.06em;"
+            f"text-transform:uppercase;color:#0e8c8a\">Gerson closeout offer {ref}</p>"
+            f"{lede}{msg}{table}{foot}</div>")
 
 def notify_buyer_round(ctx, offer: Mapping[str, Any], rnd: Mapping[str, Any]) -> bool:
     """Email the buyer about a round pushed by AOI. Best effort."""
@@ -780,7 +858,8 @@ def notify_buyer_round(ctx, offer: Mapping[str, Any], rnd: Mapping[str, Any]) ->
         return False
     link = f"{ctx.cfg.base_url}{url_for('shop.round_view', token=rnd['token'])}"
     subject = f"{ROUND_TITLES.get(rnd['kind'], 'Update on your offer')} — OF-{offer['id']}"
-    return bool(mail.send(ctx.cfg, to=to, subject=subject, body=_round_text(offer, rnd, link)))
+    return bool(mail.send(ctx.cfg, to=to, subject=subject, body=_round_text(offer, rnd, link),
+                          html=_round_html(offer, rnd, link)))
 
 
 @bp.get("/o/<token>")
