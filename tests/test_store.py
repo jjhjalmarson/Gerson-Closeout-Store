@@ -848,3 +848,43 @@ class PublishedPriceIngestTest(StoreTestCase):
         self.assertEqual(p["published_price"], 0.0)
         self.assertEqual(p["published_basis"], "")
         self.assertFalse(p["marked_down"])
+
+
+class SuggestedPriceTest(StoreTestCase):
+    """The buyer's own margin sum, run backwards, so nobody faces 500 blank boxes:
+    suggested = MSRP x (1 - target margin) x (1 - freight factor), the exact
+    inverse of the "your retail" column that was already there.  It is arithmetic
+    on numbers already on the page — no cost, no floor, no ladder step — and both
+    of the buyer's numbers stay in their browser."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed()
+        self.login()
+
+    def test_the_sheet_carries_a_slot_and_a_fill_control(self):
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('class="suggest"', html)
+        self.assertIn('id="fillFromMargin"', html)
+        # It must not submit the offer form by accident.
+        self.assertIn('<button type="button" id="fillFromMargin"', html)
+
+    def test_the_suggestion_is_computed_in_the_browser_not_served(self):
+        # No price is rendered into the slot server-side: it depends on two
+        # numbers we never receive.
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('<div class="suggest"></div>', html)
+        self.assertIn("suggestedFor", html)
+
+    def test_a_fixed_price_page_offers_no_suggestion(self):
+        # The round page prices the line itself; there is nothing to suggest, and
+        # the shared script no-ops because the page has no .suggest slot.
+        page = self.client.get("/offer").get_data(as_text=True)
+        self.assertNotIn('class="suggest"', page)
+        self.assertNotIn('id="fillFromMargin"', page)
+
+    def test_the_sheet_still_leaks_nothing(self):
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("cost", html.lower().replace("closeout", ""))
+        for hidden in ("floor", "avg_cost", "base_price", "published_price"):
+            self.assertNotIn(hidden, html.lower())
