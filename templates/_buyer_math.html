@@ -10,6 +10,19 @@
    MSRP sits beside it as the anchor, so the gap between the two is the story:
    what it sold for, and what they could sell it for.
 
+   It also runs BACKWARDS (2026-09-04), which is the half that matters on a sheet
+   of 500 blank boxes: given the same two numbers, the price they would have to
+   pay to hit their margin selling at MSRP is
+
+       suggested = MSRP x (1 - target margin) x (1 - freight factor)
+
+   -- the exact inverse of the line above. It appears under each offer box as a
+   suggestion they can take with one click, and "Fill this page" takes all of the
+   empty ones at once. It is still their own arithmetic on numbers already on the
+   page: no cost, no floor and no ladder step is disclosed, and neither of their
+   two numbers is ever sent to Gerson. Filling a price does NOT create an offer
+   line -- only a quantity does that -- so nothing is committed by looking.
+
    Every row carries [data-msrp] and an input.offer (or [data-price], where the
    price is fixed, as on a counter); the answer goes into td.retail, and
    td.retail-total, if present, gets the retail value of the whole buy.
@@ -21,6 +34,7 @@
 (function(){
   const marginEl = document.getElementById('targetMargin');
   const freightEl = document.getElementById('freightFactor');
+  const fillBtn = document.getElementById('fillFromMargin');
   try {
     const m = localStorage.getItem('targetMargin'); if(m !== null && marginEl) marginEl.value = m;
     const f = localStorage.getItem('freightFactor'); if(f !== null && freightEl) freightEl.value = f;
@@ -62,7 +76,67 @@
     });
     const totalCell = document.querySelector('.retail-total');
     if(totalCell) totalCell.innerHTML = value > 0 ? '<b>' + money(value) + '</b>' : '';
+    suggest();
   }
+
+  // --- the same sum, backwards -------------------------------------------
+  // What would they have to pay to hit their margin selling it at MSRP?
+  function suggestedFor(row, margin, freight){
+    const anchor = row.querySelector('[data-msrp]');
+    const input = row.querySelector('input.offer');
+    if(!anchor || !input || margin === null || margin >= 1) return null;
+    const msrp = Number(anchor.dataset.msrp || 0);
+    if(!(msrp > 0)) return null;
+    const price = msrp * (1 - margin) * (1 - freight);
+    return price > 0 ? Math.round(price * 100) / 100 : null;
+  }
+
+  function suggest(){
+    const margin = rate(marginEl, 95), freight = rate(freightEl, 50) || 0;
+    let fillable = 0;
+    document.querySelectorAll('tr').forEach(row => {
+      const cell = row.querySelector('.suggest');
+      if(!cell) return;                               // only the sheet has these
+      const input = row.querySelector('input.offer');
+      const price = suggestedFor(row, margin, freight);
+      if(price === null){ cell.textContent = ''; return; }
+      if(input && input.value !== ''){                // never nag over a typed price
+        cell.textContent = '';
+        return;
+      }
+      fillable++;
+      cell.innerHTML = '<button type="button" class="link-suggest" data-price="' + price.toFixed(2)
+        + '">use ' + money(price) + '</button>';
+    });
+    if(fillBtn) fillBtn.hidden = fillable === 0;
+  }
+
+  function put(input, price){
+    input.value = price.toFixed(2);
+    // Autosave posts on `change`, and only a line with a quantity is an offer --
+    // so a filled price on an empty row commits nothing and sends nothing.
+    const qty = input.closest('tr').querySelector('input.qty');
+    if(qty && Number(qty.value) > 0) input.dispatchEvent(new Event('change', {bubbles: true}));
+    paint();
+  }
+
+  document.addEventListener('click', e => {
+    const b = e.target.closest('.link-suggest');
+    if(!b) return;
+    e.preventDefault();
+    const input = b.closest('tr').querySelector('input.offer');
+    if(input) put(input, Number(b.dataset.price));
+  });
+
+  if(fillBtn) fillBtn.addEventListener('click', () => {
+    const margin = rate(marginEl, 95), freight = rate(freightEl, 50) || 0;
+    document.querySelectorAll('tr').forEach(row => {
+      const input = row.querySelector('input.offer');
+      if(!input || input.value !== '') return;        // only the empty ones
+      const price = suggestedFor(row, margin, freight);
+      if(price !== null) put(input, price);
+    });
+  });
 
   [marginEl, freightEl].forEach(el => {
     if(!el) return;

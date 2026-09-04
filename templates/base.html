@@ -51,6 +51,13 @@
                       padding-top:.8rem; border-top:1px solid var(--line); }
   .filters .actions .grow { flex:1 1 16rem; }
   .filters .hint { font-size:.75rem; color:var(--muted); }
+  /* The price that would hit the buyer's own margin, offered under an empty box.
+     Quiet: it is a suggestion, not a posted price, and it disappears the moment
+     they type their own number. */
+  .suggest { min-height:1.05rem; margin-top:.15rem; }
+  button.link-suggest { background:none; border:0; padding:0; font:inherit; font-size:.78rem;
+                        color:var(--teal); cursor:pointer; text-decoration:underline dotted; }
+  button.link-suggest:hover { text-decoration:underline; }
 </style>
 </head>
 <body>
