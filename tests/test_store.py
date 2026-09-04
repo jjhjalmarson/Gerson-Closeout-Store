@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from app import create_app
 from config import Config
 from store import db as D
+from store.db import msrp_price
 
 KEY = "store-key-123"
 
@@ -795,10 +796,15 @@ class PublishedPriceIngestTest(StoreTestCase):
     already discounted and is NOT what the item originally sold for.
     """
 
+    # Current AOI: the anchor rides as `wholesale`, NetSuite's Base Price beside it.
     MARKED_DOWN = {**CATALOG, "items": [
-        {**CATALOG["items"][0], "sku": "EAB16064", "wholesale": 13.91, "original_price": 39.73,
-         "published_price": 13.91, "published_basis": "base_marked_down",
+        {**CATALOG["items"][0], "sku": "EAB16064", "wholesale": 39.73, "original_price": 39.73,
+         "base_price": 13.91, "published_price": 13.91, "published_basis": "base_marked_down",
          "published_label": "marked down", "published_disc_pct": 65},
+    ]}
+    # The shape AOI sent before the anchor moved: base in `wholesale`, list beside it.
+    LEGACY_SHAPE = {**CATALOG, "items": [
+        {**CATALOG["items"][0], "sku": "EAB16064", "wholesale": 13.91, "original_price": 39.73},
     ]}
 
     def test_published_fields_are_stored_and_read_back(self):
@@ -809,6 +815,19 @@ class PublishedPriceIngestTest(StoreTestCase):
         self.assertEqual(p["published_basis"], "base_marked_down")
         self.assertEqual(p["published_disc_pct"], 65)
 
+    def test_the_sheet_anchors_on_the_list_price_not_the_marked_down_base(self):
+        self.ingest("catalog", self.MARKED_DOWN)
+        p = self.store.product("EAB16064")
+        self.assertEqual(p["wholesale"], 39.73)          # what the buyer offers against
+        self.assertEqual(p["base_price"], 13.91)         # what NetSuite charges today
+        self.assertEqual(p["msrp"], msrp_price(39.73))   # and the retail anchor follows it
+
+    def test_the_older_feed_shape_is_still_read_correctly(self):
+        self.assertEqual(self.ingest("catalog", self.LEGACY_SHAPE).status_code, 202)
+        p = self.store.product("EAB16064")
+        self.assertEqual(p["original_price"], 39.73)
+        self.assertTrue(p["marked_down"])
+
     def test_a_marked_down_row_is_flagged_as_such(self):
         self.ingest("catalog", self.MARKED_DOWN)
         self.assertTrue(self.store.product("EAB16064")["marked_down"])
@@ -818,6 +837,7 @@ class PublishedPriceIngestTest(StoreTestCase):
         p = self.store.product("L1")
         self.assertFalse(p["marked_down"])
         self.assertEqual(p["original_price"], p["wholesale"])
+        self.assertEqual(p["base_price"], p["wholesale"])
 
     def test_an_older_feed_without_the_fields_still_ingests(self):
         # Nothing in the payload but the fields AOI has always sent.
