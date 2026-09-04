@@ -42,6 +42,13 @@ class Config:
     # approved here, not maintained in AOI, and never tied to a NetSuite record.
     admin_emails: str = ""
 
+    # The new-arrivals digest: what went on the sheet in the last ``digest_days``,
+    # emailed to approved buyers. Sent by hand from /admin, or by itself after the
+    # nightly catalog feed on ``digest_weekday`` ("mon".."sun"; empty = never on
+    # its own). Off by default: nothing reaches a buyer until someone decides.
+    digest_weekday: str = ""
+    digest_days: int = 7
+
     @property
     def admin_list(self) -> list[str]:
         return [e.strip().lower() for e in self.admin_emails.replace(";", ",").split(",") if e.strip()]
@@ -81,4 +88,6 @@ def load_config() -> Config:
         offer_notify_emails=_env("OFFER_NOTIFY_EMAILS"),
         website_url=_env("WEBSITE_URL").rstrip("/"),
         admin_emails=_env("STORE_ADMIN_EMAILS"),
+        digest_weekday=_env("DIGEST_WEEKDAY").lower()[:3],
+        digest_days=int(_env("DIGEST_DAYS", "7") or 7),
     )

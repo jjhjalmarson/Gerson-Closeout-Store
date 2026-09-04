@@ -72,6 +72,14 @@ def ingest(kind: str):
     if kind == "catalog" and not current_app.config.get("TESTING"):
         from . import images
         images.refresh_in_background(store)
+    if kind == "catalog":
+        # The weekly new-arrivals digest rides the nightly feed, on the configured
+        # weekday only, and never twice in a week. Off unless DIGEST_WEEKDAY is set.
+        from . import digest
+        try:
+            digest.maybe_auto_send(current_app.config["STORE"])
+        except Exception:                                  # noqa: BLE001
+            current_app.logger.exception("new-arrivals digest auto-send failed")
     return jsonify({"accepted": True, "kind": kind, "count": n}), 202
 
 

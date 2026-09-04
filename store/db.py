@@ -43,8 +43,27 @@ products = sa.Table(
     sa.Column("qty_available", sa.Integer, nullable=False, default=0),
     sa.Column("lot", sa.String(200), default=""),
     sa.Column("ship_by", sa.String(10)),
+    # What the sheet can badge from (AOI's nightly changelog): the first run this
+    # SKU was on the sheet (None = before AOI kept track), the last run its price
+    # moved, and the price before it moved. Dates about the sheet, not the goods.
+    sa.Column("listed_since", sa.String(10)),
+    sa.Column("price_changed_at", sa.String(10)),
+    sa.Column("price_was", sa.Numeric(12, 2)),
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
+)
+
+# Every digest that went out: when, to how many, covering what. The weekly
+# auto-send reads the last row so a re-run of the feed never mails twice.
+digest_runs = sa.Table(
+    "digest_runs", metadata,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("kind", sa.String(20), nullable=False),
+    sa.Column("since", sa.String(10)),
+    sa.Column("items", sa.Integer, nullable=False, default=0),
+    sa.Column("recipients", sa.Integer, nullable=False, default=0),
+    sa.Column("sent_by", sa.String(200), default=""),
+    sa.Column("sent_at", sa.String(32), nullable=False),
 )
 
 customers = sa.Table(
@@ -306,7 +325,11 @@ class Store:
                 "wholesale": float(it.get("wholesale") or 0), "closeout_price": float(it.get("closeout_price") or 0),
                 "discount_pct": int(it.get("discount_pct") or 0), "next_step_date": it.get("next_step_date"),
                 "next_step_price": it.get("next_step_price"), "qty_available": int(it.get("qty_available") or 0),
-                "lot": str(it.get("lot") or ""), "ship_by": it.get("ship_by"), "active": True, "updated_at": now,
+                "lot": str(it.get("lot") or ""), "ship_by": it.get("ship_by"),
+                "listed_since": (str(it.get("listed_since"))[:10] if it.get("listed_since") else None),
+                "price_changed_at": (str(it.get("price_changed_at"))[:10] if it.get("price_changed_at") else None),
+                "price_was": (float(it["price_was"]) if it.get("price_was") is not None else None),
+                "active": True, "updated_at": now,
             })
         with self.engine.begin() as conn:
             # Full snapshot: anything not in this feed is no longer for sale.
@@ -586,6 +609,8 @@ class Store:
         "wholesale_desc": (products.c.wholesale.desc(), products.c.sku),
         "qty": (products.c.qty_available.desc(), products.c.sku),
         "value": ((products.c.wholesale * products.c.qty_available).desc(), products.c.sku),   # biggest lots first
+        # What went on the sheet most recently; SKUs listed before AOI kept track sort last.
+        "newest": (products.c.listed_since.desc().nulls_last(), products.c.brand, products.c.sku),
     }
 
     # The smallest lot a buyer can take: an inner pack where there is one, else
@@ -605,7 +630,7 @@ class Store:
 
     @classmethod
     def _product_filter(cls, *, brand=None, category=None, subcategory=None, q=None, companies=None,
-                        min_units=None, min_cases=None):
+                        min_units=None, min_cases=None, new_since=None):
         """Every word of ``q`` must appear somewhere in SKU, description, brand,
         category or subcategory; ``companies`` limits to the subsidiaries the
         buyer holds an account with (or the invite covers). ``brand`` /
@@ -622,6 +647,8 @@ class Store:
             conds.append(products.c.qty_available >= int(min_units))
         if min_cases:
             conds.append(products.c.qty_available >= int(min_cases) * cls.SMALLEST_PACK)
+        if new_since:
+            conds.append(products.c.listed_since >= str(new_since)[:10])
         for word in (q or "").split():
             like = f"%{word}%"
             conds.append(sa.or_(products.c.sku.ilike(like), products.c.description.ilike(like), products.c.brand.ilike(like),
@@ -631,20 +658,20 @@ class Store:
     def list_products(self, *, brand=None, category=None, subcategory=None,
                       q: str | None = None, sort: str = "default", min_units: int | None = None,
                       min_cases: int | None = None, companies: Iterable[str] | None = None,
-                      limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+                      new_since: str | None = None, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
                                                                q=q, companies=companies, min_units=min_units,
-                                                               min_cases=min_cases))
+                                                               min_cases=min_cases, new_since=new_since))
         stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
 
     def count_products(self, *, brand=None, category=None, subcategory=None, q: str | None = None,
                        min_units: int | None = None, min_cases: int | None = None,
-                       companies: Iterable[str] | None = None) -> int:
+                       companies: Iterable[str] | None = None, new_since: str | None = None) -> int:
         stmt = sa.select(sa.func.count()).select_from(products).where(
             *self._product_filter(brand=brand, category=category, subcategory=subcategory, q=q, companies=companies,
-                                  min_units=min_units, min_cases=min_cases))
+                                  min_units=min_units, min_cases=min_cases, new_since=new_since))
         with self.engine.connect() as conn:
             return int(conn.execute(stmt).scalar() or 0)
 
@@ -680,6 +707,20 @@ class Store:
         allowed = set(companies) if companies is not None else None
         return [by[s] for s in skus if s in by and by[s]["qty_available"] > 0
                 and (allowed is None or not by[s]["company"] or by[s]["company"] in allowed)]
+
+    # --- digests --------------------------------------------------------------
+
+    def record_digest(self, kind: str, *, since: str | None, items: int, recipients: int, sent_by: str = "") -> None:
+        with self.engine.begin() as conn:
+            conn.execute(digest_runs.insert().values(kind=str(kind)[:20], since=(str(since)[:10] if since else None),
+                                                     items=int(items), recipients=int(recipients),
+                                                     sent_by=str(sent_by or "")[:200], sent_at=now_iso()))
+
+    def last_digest(self, kind: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.select(digest_runs).where(digest_runs.c.kind == str(kind))
+                               .order_by(digest_runs.c.id.desc()).limit(1)).mappings().first()
+        return dict(row) if row else None
 
     # --- images -------------------------------------------------------------
 
@@ -919,7 +960,7 @@ def msrp_price(wholesale: float, margin: float = RETAIL_MARGIN) -> float:
 
 def _prod(r) -> dict[str, Any]:
     d = dict(r)
-    for k in ("wholesale", "closeout_price", "next_step_price"):
+    for k in ("wholesale", "closeout_price", "next_step_price", "price_was"):
         if d.get(k) is not None:
             d[k] = float(d[k])
     d["msrp"] = msrp_price(d.get("wholesale") or 0.0)
@@ -970,7 +1011,8 @@ def _ensure_columns(eng: Engine) -> None:
     alters).  Idempotent; SQLite and Postgres both accept plain ADD COLUMN."""
     insp = sa.inspect(eng)
     wanted = {"products": {"master_pack": "INTEGER NOT NULL DEFAULT 0", "inner_pack": "INTEGER NOT NULL DEFAULT 0",
-                           "company": "VARCHAR(20) NOT NULL DEFAULT ''"},
+                           "company": "VARCHAR(20) NOT NULL DEFAULT ''",
+                           "listed_since": "VARCHAR(10)", "price_changed_at": "VARCHAR(10)", "price_was": "NUMERIC(12,2)"},
               "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
               "login_tokens": {"subject": "VARCHAR(200)"},
