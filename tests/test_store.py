@@ -786,3 +786,45 @@ class SnapTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishedPriceIngestTest(StoreTestCase):
+    """AOI now sends the price NetSuite already charges and the mechanism behind
+    it, plus the pre-markdown Original Price.  Park Hill / Glitterville closeouts
+    are published by overwriting Base Price, so ``wholesale`` on those rows is
+    already discounted and is NOT what the item originally sold for.
+    """
+
+    MARKED_DOWN = {**CATALOG, "items": [
+        {**CATALOG["items"][0], "sku": "EAB16064", "wholesale": 13.91, "original_price": 39.73,
+         "published_price": 13.91, "published_basis": "base_marked_down",
+         "published_label": "marked down", "published_disc_pct": 65},
+    ]}
+
+    def test_published_fields_are_stored_and_read_back(self):
+        self.assertEqual(self.ingest("catalog", self.MARKED_DOWN).status_code, 202)
+        p = self.store.product("EAB16064")
+        self.assertEqual(p["original_price"], 39.73)
+        self.assertEqual(p["published_price"], 13.91)
+        self.assertEqual(p["published_basis"], "base_marked_down")
+        self.assertEqual(p["published_disc_pct"], 65)
+
+    def test_a_marked_down_row_is_flagged_as_such(self):
+        self.ingest("catalog", self.MARKED_DOWN)
+        self.assertTrue(self.store.product("EAB16064")["marked_down"])
+
+    def test_a_normal_row_is_not_flagged(self):
+        self.ingest("catalog", CATALOG)
+        p = self.store.product("L1")
+        self.assertFalse(p["marked_down"])
+        self.assertEqual(p["original_price"], p["wholesale"])
+
+    def test_an_older_feed_without_the_fields_still_ingests(self):
+        # Nothing in the payload but the fields AOI has always sent.
+        legacy = {**CATALOG, "items": [{k: v for k, v in CATALOG["items"][0].items()}]}
+        self.assertEqual(self.ingest("catalog", legacy).status_code, 202)
+        p = self.store.product("L1")
+        self.assertEqual(p["original_price"], 25.0)      # falls back to wholesale
+        self.assertEqual(p["published_price"], 0.0)
+        self.assertEqual(p["published_basis"], "")
+        self.assertFalse(p["marked_down"])
