@@ -18,7 +18,7 @@ from flask import Blueprint, abort, current_app, flash, redirect, render_templat
 
 from werkzeug.security import generate_password_hash
 
-from . import mail
+from . import digest, mail
 from .db import BUYER_CLASSES
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
@@ -50,7 +50,32 @@ def home():
     buyers = [dict(b, offers=counts.get(f"buyer:{b['id']}", 0)) for b in store.list_buyers() if b["status"] in ("approved", "suspended")]
     return render_template("admin.html", admin_email=current_admin(), pending=store.list_buyers(status="pending"),
                            buyers=buyers, invites=store.list_signup_invites(), classes=list(BUYER_CLASSES),
-                           has_password=bool(store.admin_password_hash(current_admin())))
+                           has_password=bool(store.admin_password_hash(current_admin())),
+                           digest=digest.status(_ctx()))
+
+
+@bp.get("/digest/preview")
+@admin_required
+def digest_preview():
+    """The new-arrivals email exactly as a buyer would get it."""
+    ctx = _ctx()
+    since = digest.cutoff(ctx.cfg.digest_days)
+    items = digest.build(ctx.store, since=since)
+    if not items:
+        return f"<p style='font:14px Segoe UI,Arial'>Nothing went on the sheet since {since}. There is no digest to send.</p>"
+    return digest.html(items, since=since, base_url=ctx.cfg.base_url, days=ctx.cfg.digest_days)
+
+
+@bp.post("/digest/send")
+@admin_required
+def digest_send():
+    ctx = _ctx()
+    r = digest.send(ctx, since=digest.cutoff(ctx.cfg.digest_days), sent_by=current_admin())
+    if r.get("sent"):
+        flash(f"New-arrivals digest sent to {r['sent']} buyer{'' if r['sent'] == 1 else 's'} ({r['items']} items).")
+    else:
+        flash("Digest not sent: " + str(r.get("reason") or "no one to send it to"))
+    return redirect(url_for("admin.home"))
 
 
 PASSWORD_MIN_LEN = 12

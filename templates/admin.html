@@ -23,6 +23,18 @@
   <button type="submit">Send invitation</button>
 </form>
 
+<h2>New-arrivals digest</h2>
+<p class="muted"><b>{{ digest.new_count }}</b> item{{ '' if digest.new_count == 1 else 's' }} went on the sheet in the last {{ digest.days }} days.
+  {% if digest.last %}Last sent {{ digest.last.sent_at[:16].replace('T', ' ') }} to {{ digest.last.recipients }} buyer{{ '' if digest.last.recipients == 1 else 's' }} ({{ digest.last.items }} items){% if digest.last.sent_by %}, by {{ digest.last.sent_by }}{% endif %}.{% else %}Never sent.{% endif %}
+  {% if digest.weekday %}It also sends itself every <b>{{ digest.weekday }}</b> after the nightly feed, at most once a week.{% else %}Set <code>DIGEST_WEEKDAY</code> (mon…sun) on the service and it sends itself weekly; until then it goes only when you click.{% endif %}
+  Buyers get the items, the pack, what is available and the original wholesale, with a link to the sheet filtered to what is new. No closeout price, as on the sheet.</p>
+<div class="bar">
+  <a class="btn sec" href="{{ url_for('admin.digest_preview') }}" target="_blank">Preview the email</a>
+  <form method="post" action="{{ url_for('admin.digest_send') }}" style="margin:0" onsubmit="return confirm('Email the new-arrivals digest to {{ digest.recipients }} approved buyer(s) now?')">
+    <button type="submit" {% if not digest.new_count or not digest.recipients %}disabled{% endif %}>Send to {{ digest.recipients }} approved buyer{{ '' if digest.recipients == 1 else 's' }}</button>
+  </form>
+</div>
+
 <h2>Applications waiting for approval <span class="pill">{{ pending|length }}</span></h2>
 {% if not pending %}<p class="muted">Nobody is waiting. Invited buyers do not queue here.</p>{% else %}
 <table>

@@ -17,13 +17,27 @@ the same key. See `docs/closeout-platform-brief.md` §0 / §11 in the AOI repo.
 
 | Feed | Contents | Never contains |
 |---|---|---|
-| `catalog` | SKU, description, image, brand, category, case / master / inner pack, wholesale, approximate quantity, company | cost, receipt date, age, bucket, advance rate, floors, tier, state |
+| `catalog` | SKU, description, image, brand, category, case / master / inner pack, wholesale, approximate quantity, company, `listed_since` (first run on the sheet; null = before AOI kept track), `price_changed_at`, `price_was` | cost, receipt date, age, bucket, advance rate, floors, tier, state |
 | `invites` | invite token, label (who it went to), contact, email, companies, expiry | anything else |
 | `customers` | allowlisted NetSuite accounts (id, company, login emails, rep) — may also sign in by magic link | AR, order history, credit |
 | `curation` | per-customer SKU lists (kept for AOI compatibility; not shown on the sheet) | the history behind the ranking |
 
 The catalog feed still carries the ladder price for AOI's own use; **the sheet
 never shows it** — buyers see original wholesale and type what they will pay.
+
+## What brings a buyer back
+
+* **NEW** on the sheet: a SKU wears the badge for 14 days after `listed_since`;
+  the header counts them ("12 new items added in the last 14 days") and links
+  to the sheet filtered to just those (`?new=1&sort=newest`). "Newest on the
+  sheet" is a sort; "only the last 14 days" is a filter.
+* **New-arrivals digest** (`store/digest.py`): one email to every approved buyer
+  with what went on the sheet in the last `DIGEST_DAYS` (7): item, pack,
+  available, original wholesale, a link to the new items. No closeout price, as
+  on the sheet. Sent from `/admin` (preview, then send), or by itself after the
+  nightly catalog feed on `DIGEST_WEEKDAY` (`mon`..`sun`), at most once a week;
+  unset (the default) means it never sends on its own. Every send is recorded
+  in `digest_runs`.
 
 ## Who gets in
 
