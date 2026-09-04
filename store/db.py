@@ -36,13 +36,15 @@ products = sa.Table(
     sa.Column("inner_pack", sa.Integer, nullable=False, default=0),    # units per inner pack (0 = none)
     sa.Column("upc", sa.String(32), default=""),
     sa.Column("wholesale", sa.Numeric(12, 2), nullable=False, default=0),
-    # The pre-markdown list price from the NetSuite item record.  Park Hill and
-    # Glitterville closeouts are published by overwriting Base Price with the
-    # marked-down number, so ``wholesale`` on those rows is ALREADY discounted
-    # (a Sale65 item's base is 65% off) and is not what the item originally sold
-    # for.  ``original_price`` is; anything the buyer sees as "original" or as a
-    # retail anchor must come from here, never from ``wholesale``.
+    # The pre-markdown list price from the NetSuite item record, and the anchor
+    # the sheet shows (JJ, 2026-09-04).  AOI sends it as ``wholesale`` too, so on
+    # this side the two agree and every price the buyer sees is measured off list.
     sa.Column("original_price", sa.Numeric(12, 2), nullable=False, default=0),
+    # NetSuite's Base Price, kept only so the two are never confused again.  Park
+    # Hill and Glitterville publish a closeout by overwriting Base Price, so on
+    # those rows this is what the website charges today and is NOT what the item
+    # originally sold for.  Never show it as "wholesale".
+    sa.Column("base_price", sa.Numeric(12, 2), nullable=False, default=0),
     # What NetSuite charges today, and which mechanism set it:
     #   ev               -> the item's EV pricing group (Gerson)
     #   base_marked_down -> the markdown is baked into Base Price (Park Hill /
@@ -346,6 +348,7 @@ class Store:
                 "published_basis": str(it.get("published_basis") or "")[:20],
                 "published_label": str(it.get("published_label") or "")[:40],
                 "published_disc_pct": int(it.get("published_disc_pct") or 0),
+                "base_price": float(it.get("base_price") or it.get("wholesale") or 0),
                 "discount_pct": int(it.get("discount_pct") or 0), "next_step_date": it.get("next_step_date"),
                 "next_step_price": it.get("next_step_price"), "qty_available": int(it.get("qty_available") or 0),
                 "lot": str(it.get("lot") or ""), "ship_by": it.get("ship_by"),
@@ -984,18 +987,21 @@ def msrp_price(wholesale: float, margin: float = RETAIL_MARGIN) -> float:
 def _prod(r) -> dict[str, Any]:
     d = dict(r)
     for k in ("wholesale", "closeout_price", "next_step_price", "price_was",
-              "original_price", "published_price"):
+              "original_price", "published_price", "base_price"):
         if d.get(k) is not None:
             d[k] = float(d[k])
-    # An older feed sends no original: the base price is the only anchor there is.
+    # An older feed sends neither: the base price is the only anchor there is.
     if not d.get("original_price"):
         d["original_price"] = d.get("wholesale") or 0.0
-    # True when NetSuite's Base Price is already a markdown, so ``wholesale`` on
-    # this row is NOT what the item originally sold for.  The sheet still shows
-    # ``wholesale`` and derives MSRP from it, which reads low on these rows;
-    # changing that also changes what "% of wholesale" means to AOI's floors and
-    # to the negotiation learning set, so it waits on that decision.
-    d["marked_down"] = bool(d["original_price"] > (d.get("wholesale") or 0.0) * 1.005)
+    if not d.get("base_price"):
+        d["base_price"] = d.get("wholesale") or 0.0
+    # True when NetSuite's Base Price is a markdown against the list price the
+    # sheet anchors on -- so the website charges less today than the anchor here
+    # implies.  Reads correctly from either feed shape: current AOI sends the
+    # anchor as `wholesale`, an older one sent the base there and the list in
+    # `original_price`.  Internal: nothing shows it to a buyer.
+    d["marked_down"] = bool(max(d["original_price"], d.get("wholesale") or 0.0)
+                            > d["base_price"] * 1.005)
     d["msrp"] = msrp_price(d.get("wholesale") or 0.0)
     # Depth in the unit a buyer thinks in: the smallest lot they can take.
     sp = int(d.get("inner_pack") or 0) or int(d.get("case_pack") or 0) or 1
@@ -1047,6 +1053,7 @@ def _ensure_columns(eng: Engine) -> None:
                            "company": "VARCHAR(20) NOT NULL DEFAULT ''",
                            "listed_since": "VARCHAR(10)", "price_changed_at": "VARCHAR(10)", "price_was": "NUMERIC(12,2)",
                            "original_price": "NUMERIC(12,2) NOT NULL DEFAULT 0",
+                           "base_price": "NUMERIC(12,2) NOT NULL DEFAULT 0",
                            "published_price": "NUMERIC(12,2) NOT NULL DEFAULT 0",
                            "published_basis": "VARCHAR(20) NOT NULL DEFAULT ''",
                            "published_label": "VARCHAR(40) NOT NULL DEFAULT ''",
