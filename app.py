@@ -38,6 +38,10 @@ def create_app(cfg: Config | None = None) -> Flask:
     app.register_blueprint(admin.bp)
     # MSRP off the published wholesale, for any page that shows a price.
     app.jinja_env.filters["msrp"] = msrp_price
+    # Ceiling on the suggested offer (see Config.suggest_max_disc): the buyer's
+    # margin sum runs off MSRP, and MSRP is itself derived from wholesale, so
+    # without a cap the suggestion is a fixed fraction of wholesale on every line.
+    app.jinja_env.globals["suggest_max_disc"] = cfg.suggest_max_disc
 
     @app.after_request
     def _headers(resp):

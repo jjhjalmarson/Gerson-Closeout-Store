@@ -20,7 +20,20 @@
    suggestion they can take with one click, and "Fill this page" takes all of the
    empty ones at once. It is still their own arithmetic on numbers already on the
    page: no cost, no floor and no ladder step is disclosed, and neither of their
-   two numbers is ever sent to Gerson. Filling a price does NOT create an offer
+   two numbers is ever sent to Gerson.
+
+   CAPPED (2026-09-08). That sum alone is circular on this sheet: MSRP is not a
+   NetSuite field, it is msrp_price(wholesale) = wholesale / (1 - 0.60), so
+
+       suggested = 2.5 x wholesale x (1 - margin) x (1 - freight)
+
+   is a fixed multiple of wholesale on EVERY line, carrying nothing about the
+   item. At the settings a buyer actually had on 2026-09-08 (50% margin, 25%
+   freight) that multiple is 0.9375 -- the sheet was telling a closeout buyer to
+   offer 94% of wholesale ($20.62 against $21.95), which reads as broken. The
+   suggestion is therefore capped at ``suggest_max_disc`` off wholesale so it is
+   always closeout-shaped. The cap is one flat site-wide number, NOT the item's
+   ladder step, so it still discloses nothing per-item. Filling a price does NOT create an offer
    line -- only a quantity does that -- so nothing is committed by looking.
 
    Every row carries [data-msrp] and an input.offer (or [data-price], where the
@@ -32,6 +45,7 @@
 #}
 <script>
 (function(){
+  const MAX_DISC = Number('{{ suggest_max_disc | default(0.20) }}') || 0;
   const marginEl = document.getElementById('targetMargin');
   const freightEl = document.getElementById('freightFactor');
   const fillBtn = document.getElementById('fillFromMargin');
@@ -87,7 +101,14 @@
     if(!anchor || !input || margin === null || margin >= 1) return null;
     const msrp = Number(anchor.dataset.msrp || 0);
     if(!(msrp > 0)) return null;
-    const price = msrp * (1 - margin) * (1 - freight);
+    let price = msrp * (1 - margin) * (1 - freight);
+    // Never suggest a number that is not closeout-shaped: MSRP is derived from
+    // wholesale, so an uncapped suggestion sits at a fixed fraction of it.
+    const whsl = Number((row.querySelector('[data-wholesale]') || {dataset:{}}).dataset.wholesale || 0);
+    if(whsl > 0 && MAX_DISC > 0){
+      if(MAX_DISC >= 1) return null;                 // 1 = suppress the suggestion
+      price = Math.min(price, whsl * (1 - MAX_DISC));
+    }
     return price > 0 ? Math.round(price * 100) / 100 : null;
   }
 

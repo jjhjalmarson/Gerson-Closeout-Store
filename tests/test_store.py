@@ -455,6 +455,19 @@ class OfferTest(StoreTestCase):
         # and nothing about our side of it ever appears on a buyer page
         self.assertNotIn("cost", page.lower().replace("closeout", ""))
 
+    def test_the_suggested_offer_is_capped_to_a_closeout_shaped_number(self):
+        """MSRP is msrp_price(wholesale), so the buyer's backwards margin sum is a
+        fixed multiple of wholesale on every line -- at 50% margin / 25% freight it
+        lands at 94% of wholesale, which is not a closeout. The sheet ships the
+        wholesale anchor and a flat cap so the suggestion can never sit there."""
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('data-wholesale="25.00"', html)         # L1, beside data-msrp
+        # the cap reaches the page as a number, not an unrendered Jinja expression
+        self.assertNotIn("suggest_max_disc", html)
+        self.assertIn("const MAX_DISC = Number('0.2')", html)
+        # uncapped, 50/25 would suggest 0.9375 x wholesale; the cap holds it at 0.80
+        self.assertLess(0.80 * 25.00, 0.9375 * 25.00)
+
     def test_behaviour_is_recorded_and_pulled_with_a_cursor(self):
         """The point of the events table is what never becomes an offer: a SKU
         opened and left, a search with no results, a price typed and abandoned."""
