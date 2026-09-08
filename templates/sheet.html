@@ -76,7 +76,9 @@
     <td class="muted pack">{{ pack(p) }}</td>
     <td class="right">{{ p.qty_available }}
       {% if p.cases_available %}<br><span class="muted" style="font-size:.78rem">{{ p.cases_available }} × {{ p.smallest_pack }}</span>{% endif %}</td>
-    <td class="right price" data-wholesale="{{ '%.2f'|format(p.wholesale) }}">${{ '%.2f'|format(p.wholesale) }}</td>
+    {# data-suggest-max: the highest the sheet will suggest for this line (app.suggest_cap). #}
+    <td class="right price" data-wholesale="{{ '%.2f'|format(p.wholesale) }}"
+        {% set cap = suggest_cap(p) %}{% if cap %}data-suggest-max="{{ '%.2f'|format(cap) }}"{% endif %}>${{ '%.2f'|format(p.wholesale) }}</td>
     <td class="right" data-msrp="{{ '%.2f'|format(p.msrp) }}">${{ '%.2f'|format(p.msrp) }}</td>
     <td class="right"><input class="qty" type="number" name="qty[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></td>
     <td class="right"><span class="offercell">
