@@ -901,3 +901,60 @@ class SuggestedPriceTest(StoreTestCase):
         self.assertNotIn("cost", html.lower().replace("closeout", ""))
         for hidden in ("floor", "avg_cost", "base_price", "published_price"):
             self.assertNotIn(hidden, html.lower())
+
+
+class FeaturedTest(StoreTestCase):
+    """The hand-picked SKUs AOI wants the sheet to lead with (JJ, 2026-09-08).
+
+    The store's whole knowledge of them is a rank: it sorts and badges on it,
+    and never learns why a SKU is on the list."""
+
+    FEATURED = {**CATALOG, "items": [CATALOG["items"][0], {**CATALOG["items"][1], "featured_rank": 1}]}
+
+    def setUp(self):
+        super().setUp()
+        self.seed()
+        self.use_invite("ross-xyz")
+
+    def test_a_ranked_sku_leads_the_default_order(self):
+        # By brand, Fall/Holiday (L1) comes before Park Hill (T2); featured wins.
+        self.assertEqual([p["sku"] for p in self.store.list_products()], ["L1", "T2"])
+        self.ingest("catalog", self.FEATURED)
+        self.assertEqual([p["sku"] for p in self.store.list_products()], ["T2", "L1"])
+
+    def test_the_buyers_own_sort_is_never_overridden(self):
+        self.ingest("catalog", self.FEATURED)
+        self.assertEqual([p["sku"] for p in self.store.list_products(sort="wholesale_asc")], ["L1", "T2"])
+        self.assertEqual([p["sku"] for p in self.store.list_products(sort="brand")], ["L1", "T2"])
+
+    def test_the_sheet_badges_them_and_offers_them_on_their_own(self):
+        self.ingest("catalog", self.FEATURED)
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('class="badge-featured"', html)
+        self.assertIn("1 featured</b> item", html)
+        self.assertIn('name="featured" value="1"', html)
+        just = self.client.get("/?featured=1").get_data(as_text=True)
+        self.assertIn("Tree", just); self.assertNotIn("Lantern", just)
+        self.assertIn("showing just those", just)
+        self.assertIn('class="badge-featured"', self.client.get("/item/T2").get_data(as_text=True))
+        self.assertNotIn('class="badge-featured"', self.client.get("/item/L1").get_data(as_text=True))
+
+    def test_nothing_featured_leaves_the_sheet_exactly_as_it_was(self):
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn('class="badge-featured"', html)
+        self.assertNotIn("featured</b> item", html)
+        self.assertNotIn('name="featured" value="1"', html)
+        self.assertEqual([p["sku"] for p in self.store.list_products()], ["L1", "T2"])
+
+    def test_the_list_is_replaced_by_each_feed_not_added_to(self):
+        self.ingest("catalog", self.FEATURED)
+        self.assertEqual(self.store.count_products(featured_only=True), 1)
+        self.ingest("catalog", CATALOG)                       # a feed with no ranks at all
+        self.assertEqual(self.store.count_products(featured_only=True), 0)
+
+    def test_a_rank_explains_nothing_to_the_buyer(self):
+        self.ingest("catalog", self.FEATURED)
+        for page in ("/", "/?featured=1", "/item/T2"):
+            html = self.client.get(page).get_data(as_text=True).lower()
+            for hidden in ("written down", "write-down", "below cost", "featured_rank"):
+                self.assertNotIn(hidden, html)

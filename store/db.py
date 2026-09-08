@@ -67,6 +67,10 @@ products = sa.Table(
     sa.Column("listed_since", sa.String(10)),
     sa.Column("price_changed_at", sa.String(10)),
     sa.Column("price_was", sa.Numeric(12, 2)),
+    # Where AOI put this SKU on the hand-picked list the sheet leads with
+    # (1 = first), NULL for everything else.  A merchandising rank and nothing
+    # else: it says "show this early", never why.
+    sa.Column("featured_rank", sa.Integer),
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
@@ -355,6 +359,9 @@ class Store:
                 "listed_since": (str(it.get("listed_since"))[:10] if it.get("listed_since") else None),
                 "price_changed_at": (str(it.get("price_changed_at"))[:10] if it.get("price_changed_at") else None),
                 "price_was": (float(it["price_was"]) if it.get("price_was") is not None else None),
+                # An older AOI sends no rank at all: nothing is featured, and the
+                # sheet reads in brand / category order exactly as before.
+                "featured_rank": (int(it["featured_rank"]) if it.get("featured_rank") else None),
                 "active": True, "updated_at": now,
             })
         with self.engine.begin() as conn:
@@ -629,8 +636,14 @@ class Store:
             rows = conn.execute(sa.select(products).where(products.c.sku.in_(wanted), products.c.active.is_(True))).mappings().all()
         return {r["sku"]: _prod(r) for r in rows}
 
+    # The featured list leads the default order (JJ, 2026-09-08) -- the SKUs we
+    # most want an offer on go in front of the buyer before anything else. Every
+    # other sort is the buyer's own question, so featured takes no priority there.
+    FEATURED_FIRST = products.c.featured_rank.asc().nulls_last()
+
     SORTS = {
-        "default": (products.c.brand, products.c.category, products.c.sku),
+        "default": (FEATURED_FIRST, products.c.brand, products.c.category, products.c.sku),
+        "brand": (products.c.brand, products.c.category, products.c.sku),
         "wholesale_asc": (products.c.wholesale.asc(), products.c.sku),
         "wholesale_desc": (products.c.wholesale.desc(), products.c.sku),
         "qty": (products.c.qty_available.desc(), products.c.sku),
@@ -656,7 +669,7 @@ class Store:
 
     @classmethod
     def _product_filter(cls, *, brand=None, category=None, subcategory=None, q=None, companies=None,
-                        min_units=None, min_cases=None, new_since=None):
+                        min_units=None, min_cases=None, new_since=None, featured_only=False):
         """Every word of ``q`` must appear somewhere in SKU, description, brand,
         category or subcategory; ``companies`` limits to the subsidiaries the
         buyer holds an account with (or the invite covers). ``brand`` /
@@ -675,6 +688,8 @@ class Store:
             conds.append(products.c.qty_available >= int(min_cases) * cls.SMALLEST_PACK)
         if new_since:
             conds.append(products.c.listed_since >= str(new_since)[:10])
+        if featured_only:
+            conds.append(products.c.featured_rank.isnot(None))
         for word in (q or "").split():
             like = f"%{word}%"
             conds.append(sa.or_(products.c.sku.ilike(like), products.c.description.ilike(like), products.c.brand.ilike(like),
@@ -684,20 +699,24 @@ class Store:
     def list_products(self, *, brand=None, category=None, subcategory=None,
                       q: str | None = None, sort: str = "default", min_units: int | None = None,
                       min_cases: int | None = None, companies: Iterable[str] | None = None,
-                      new_since: str | None = None, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+                      new_since: str | None = None, featured_only: bool = False,
+                      limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
                                                                q=q, companies=companies, min_units=min_units,
-                                                               min_cases=min_cases, new_since=new_since))
+                                                               min_cases=min_cases, new_since=new_since,
+                                                               featured_only=featured_only))
         stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
 
     def count_products(self, *, brand=None, category=None, subcategory=None, q: str | None = None,
                        min_units: int | None = None, min_cases: int | None = None,
-                       companies: Iterable[str] | None = None, new_since: str | None = None) -> int:
+                       companies: Iterable[str] | None = None, new_since: str | None = None,
+                       featured_only: bool = False) -> int:
         stmt = sa.select(sa.func.count()).select_from(products).where(
             *self._product_filter(brand=brand, category=category, subcategory=subcategory, q=q, companies=companies,
-                                  min_units=min_units, min_cases=min_cases, new_since=new_since))
+                                  min_units=min_units, min_cases=min_cases, new_since=new_since,
+                                  featured_only=featured_only))
         with self.engine.connect() as conn:
             return int(conn.execute(stmt).scalar() or 0)
 
@@ -1050,6 +1069,7 @@ def _ensure_columns(eng: Engine) -> None:
     alters).  Idempotent; SQLite and Postgres both accept plain ADD COLUMN."""
     insp = sa.inspect(eng)
     wanted = {"products": {"master_pack": "INTEGER NOT NULL DEFAULT 0", "inner_pack": "INTEGER NOT NULL DEFAULT 0",
+                           "featured_rank": "INTEGER",
                            "company": "VARCHAR(20) NOT NULL DEFAULT ''",
                            "listed_since": "VARCHAR(10)", "price_changed_at": "VARCHAR(10)", "price_was": "NUMERIC(12,2)",
                            "original_price": "NUMERIC(12,2) NOT NULL DEFAULT 0",

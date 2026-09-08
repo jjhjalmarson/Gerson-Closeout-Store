@@ -371,31 +371,37 @@ def home():
     new_flag = a.get("new") == "1"
     cutoff = new_cutoff()
     new_since = cutoff if new_flag else None
-    filtered = any(f.values()) or new_flag
+    # The featured list leads the sheet anyway; this narrows it to just those.
+    featured_flag = a.get("featured") == "1"
+    filtered = any(f.values()) or new_flag or featured_flag
     companies = g.buyer["companies"]
-    total = store.count_products(**f, companies=companies, new_since=new_since)
+    total = store.count_products(**f, companies=companies, new_since=new_since, featured_only=featured_flag)
     new_total = store.count_products(companies=companies, new_since=cutoff)
+    featured_total = store.count_products(companies=companies, featured_only=True)
     pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
     page = min(page, pages)
     items = store.list_products(**f, sort=sort, companies=companies, new_since=new_since,
-                                limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
+                                featured_only=featured_flag, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
     draft = store.draft(g.buyer["key"])
     for p in items:
         d = draft.get(p["sku"]) or {}
         p["draft_qty"] = d.get("qty") or ""
         p["draft_price"] = ("%.2f" % d["price"]) if d.get("price") else ""
     args = {k: v for k, v in {**f, "sort": sort if sort != "default" else None,
-                              "new": "1" if new_flag else None}.items() if v}
+                              "new": "1" if new_flag else None,
+                              "featured": "1" if featured_flag else None}.items() if v}
     # A search that returns nothing is the most useful row in the table: it says
     # what they came for that we do not have.
     ev("sheet_viewed", **f, sort=(sort if sort != "default" else ""), page=(page if page > 1 else None),
-       new=(True if new_flag else None), results=total, no_results=(total == 0 and bool(f["q"])) or None)
+       new=(True if new_flag else None), featured=(True if featured_flag else None),
+       results=total, no_results=(total == 0 and bool(f["q"])) or None)
     return render_template("sheet.html", buyer=g.buyer, items=items,
                            facets=store.facets(brand=f["brand"], category=f["category"], companies=companies),
                            brand=f["brand"], category=f["category"], subcategory=f["subcategory"], q=f["q"] or "",
                            min_units=f["min_units"] or "", min_cases=f["min_cases"] or "",
                            sort=sort, page=page, pages=pages, total=total, filtered=filtered, page_args=args,
                            new_flag=new_flag, new_total=new_total, new_cutoff=cutoff, new_days=NEW_DAYS,
+                           featured_flag=featured_flag, featured_total=featured_total,
                            draft_count=len(draft))
 
 
