@@ -49,6 +49,15 @@ class Config:
     digest_weekday: str = ""
     digest_days: int = 7
 
+    # Ceiling on the suggested offer, as a discount off the wholesale anchor.
+    # The buyer's own margin sum is retail arithmetic off MSRP; on a 2.5x markup
+    # it lands near full wholesale (a $21.95 item suggested $20.62 on 2026-09-08),
+    # which reads as broken on a closeout sheet. The suggestion is capped here so
+    # it is always closeout-shaped. This is a flat site-wide floor-less ceiling --
+    # it is NOT the item's ladder step and discloses nothing about it. 0 disables
+    # the cap; 1 suppresses the suggestion entirely.
+    suggest_max_disc: float = 0.20
+
     @property
     def admin_list(self) -> list[str]:
         return [e.strip().lower() for e in self.admin_emails.replace(";", ",").split(",") if e.strip()]
@@ -90,4 +99,5 @@ def load_config() -> Config:
         admin_emails=_env("STORE_ADMIN_EMAILS"),
         digest_weekday=_env("DIGEST_WEEKDAY").lower()[:3],
         digest_days=int(_env("DIGEST_DAYS", "7") or 7),
+        suggest_max_disc=min(max(float(_env("SUGGEST_MAX_DISCOUNT", "0.20") or 0.20), 0.0), 1.0),
     )
