@@ -1,4 +1,9 @@
 {# Pack sizes the way buyers read them: inner, then master; the NetSuite minimum only when neither is known (JJ, 2026-09-02). #}
 {% macro pack(p) -%}
-{%- if p.inner_pack %}inner {{ p.inner_pack }}{% endif %}{% if p.master_pack %}{% if p.inner_pack %} · {% endif %}master {{ p.master_pack }}{% endif %}{% if not p.inner_pack and not p.master_pack %}pack of {{ p.case_pack }}{% endif -%}
+{#- A pack of one is not a pack: "master 1" and "inner 1" read as a mistake, and
+    on the open sheet there are thousands of single-piece items. -#}
+{%- set inner = p.inner_pack if p.inner_pack and p.inner_pack > 1 else 0 -%}
+{%- set master = p.master_pack if p.master_pack and p.master_pack > 1 else 0 -%}
+{%- if inner %}inner {{ inner }}{% endif %}{% if master %}{% if inner %} · {% endif %}master {{ master }}{% endif -%}
+{%- if not inner and not master %}{% if p.case_pack and p.case_pack > 1 %}pack of {{ p.case_pack }}{% else %}sold singly{% endif %}{% endif -%}
 {%- endmacro %}
