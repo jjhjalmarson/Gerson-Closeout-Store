@@ -32,8 +32,16 @@
    freight) that multiple is 0.9375 -- the sheet was telling a closeout buyer to
    offer 94% of wholesale ($20.62 against $21.95), which reads as broken. The
    suggestion is therefore capped at ``suggest_max_disc`` off wholesale so it is
-   always closeout-shaped. The cap is one flat site-wide number, NOT the item's
-   ladder step, so it still discloses nothing per-item. Filling a price does NOT create an offer
+   always closeout-shaped.
+
+   AND AT OUR OWN PUBLISHED PRICE (JJ, 2026-09-08). The flat cap was still one
+   number for 8,400 items, and on the written-down ones it anchored miles above
+   reality: "use $111.22" on a SKU published at $69.51 that we would have taken
+   $20 for. So where the page provides ``data-suggest-max`` -- the lower of the
+   flat cap and the ladder step the website already charges (``suggest_cap`` in
+   app.py) -- that governs instead. It is a ceiling on the buyer's arithmetic,
+   never rendered as a price, and it is not the floor: what we would TAKE stays
+   in AOI and crosses nothing. Filling a price does NOT create an offer
    line -- only a quantity does that -- so nothing is committed by looking.
 
    Every row carries [data-msrp] and an input.offer (or [data-price], where the
@@ -104,10 +112,14 @@
     let price = msrp * (1 - margin) * (1 - freight);
     // Never suggest a number that is not closeout-shaped: MSRP is derived from
     // wholesale, so an uncapped suggestion sits at a fixed fraction of it.
-    const whsl = Number((row.querySelector('[data-wholesale]') || {dataset:{}}).dataset.wholesale || 0);
+    const anchorEl = row.querySelector('[data-wholesale]') || {dataset:{}};
+    const whsl = Number(anchorEl.dataset.wholesale || 0);
     if(whsl > 0 && MAX_DISC > 0){
       if(MAX_DISC >= 1) return null;                 // 1 = suppress the suggestion
-      price = Math.min(price, whsl * (1 - MAX_DISC));
+      // The server's ceiling where there is one (the flat cap AND our own
+      // published price); the flat cap alone on a page that sends no ceiling.
+      const cap = Number(anchorEl.dataset.suggestMax || 0);
+      price = Math.min(price, cap > 0 ? cap : whsl * (1 - MAX_DISC));
     }
     return price > 0 ? Math.round(price * 100) / 100 : null;
   }

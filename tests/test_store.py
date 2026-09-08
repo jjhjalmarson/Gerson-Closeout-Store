@@ -958,3 +958,51 @@ class FeaturedTest(StoreTestCase):
             html = self.client.get(page).get_data(as_text=True).lower()
             for hidden in ("written down", "write-down", "below cost", "featured_rank"):
                 self.assertNotIn(hidden, html)
+
+
+class SuggestCapTest(StoreTestCase):
+    """The suggestion never exceeds what we already charge publicly (JJ, 2026-09-08).
+
+    The flat cap alone was one number for the whole sheet, and on a written-down
+    SKU it anchored the buyer far above our own published price."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed()
+        self.use_invite("ross-xyz")
+
+    def _caps(self, html):
+        import re
+        return dict(zip(re.findall(r'name="qty\[(\w+)\]"', html),
+                        re.findall(r'data-suggest-max="([\d.]+)"', html)))
+
+    def test_the_ceiling_is_the_lower_of_the_flat_cap_and_our_published_price(self):
+        caps = self._caps(self.client.get("/").get_data(as_text=True))
+        # L1: $25 wholesale, published $20. Flat cap 20% off = $20.00; equal, so $20.00.
+        self.assertEqual(caps["L1"], "20.00")
+        # T2: $100 wholesale, published $30. Flat cap would be $80 — the published
+        # price is far lower and governs.
+        self.assertEqual(caps["T2"], "30.00")
+
+    def test_an_unladdered_row_keeps_the_flat_cap(self):
+        # closeout_price == wholesale is "no discount published": only the flat cap applies.
+        flat = {**CATALOG, "items": [{**CATALOG["items"][1], "closeout_price": 100.0}]}
+        self.ingest("catalog", flat)
+        self.assertEqual(self._caps(self.client.get("/").get_data(as_text=True))["T2"], "80.00")
+
+    def test_the_ceiling_is_never_the_floor_and_never_shown_as_a_price(self):
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("$30.00", html)          # still not rendered as a price
+        for hidden in ("floor", "closeout_price", "featured_floor"):
+            self.assertNotIn(hidden, html.lower())
+
+    def test_the_ceiling_is_computed_where_the_config_lives(self):
+        from app import create_app
+        app = create_app(_cfg(suggest_max_disc=0.5))
+        cap = app.jinja_env.globals["suggest_cap"]
+        self.assertEqual(cap({"wholesale": 100.0, "closeout_price": 30.0}), 30.0)   # published wins
+        self.assertEqual(cap({"wholesale": 100.0, "closeout_price": 0.0}), 50.0)    # flat cap
+        self.assertEqual(cap({"wholesale": 100.0, "closeout_price": 100.0}), 50.0)  # no markdown
+        self.assertIsNone(cap({"wholesale": 0.0, "closeout_price": 30.0}))          # no anchor
+        off = create_app(_cfg(suggest_max_disc=1.0)).jinja_env.globals["suggest_cap"]
+        self.assertEqual(off({"wholesale": 100.0, "closeout_price": 30.0}), 30.0)   # suppressed in JS
