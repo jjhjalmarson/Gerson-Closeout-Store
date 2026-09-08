@@ -886,7 +886,7 @@ class SuggestedPriceTest(StoreTestCase):
         # No price is rendered into the slot server-side: it depends on two
         # numbers we never receive.
         html = self.client.get("/").get_data(as_text=True)
-        self.assertIn('<div class="suggest"></div>', html)
+        self.assertIn('<span class="suggest"></span>', html)
         self.assertIn("suggestedFor", html)
 
     def test_a_fixed_price_page_offers_no_suggestion(self):
