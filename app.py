@@ -74,8 +74,10 @@ def create_app(cfg: Config | None = None) -> Flask:
     # Gallery urls are asked for at the size the slot needs; Salsify ships the
     # untouched master otherwise (13 MB for one 56px thumbnail).
     app.jinja_env.filters["sized"] = images.sized
+    app.jinja_env.filters["poster"] = images.poster
     app.jinja_env.globals["STAGE_WIDTH"] = images.STAGE_WIDTH
     app.jinja_env.globals["THUMB_WIDTH"] = images.THUMB_WIDTH
+    app.jinja_env.globals["VIDEO_WIDTH"] = images.VIDEO_WIDTH
 
     @app.after_request
     def _headers(resp):

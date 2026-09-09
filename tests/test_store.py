@@ -1428,9 +1428,13 @@ class SizedUrlTest(unittest.TestCase):
             "https://images.salsify.com/image/upload/s--boSg-_7H--/"
             "w_120,c_limit,f_auto,q_auto/pzprql3zoeyyezlv6so5.jpg")
 
-    def test_video_is_left_alone(self):
+    def test_video_is_capped_too(self):
+        # It was left alone until JJ asked for the cap (2026-09-09): 76 MB is not
+        # a thing to hand a buyer on the chance they press play.
         from store.images import sized
-        self.assertEqual(sized(self.VID, 900), self.VID)
+        self.assertEqual(sized(self.VID, 720),
+                         "https://images.salsify.com/video/upload/s--lX-r9FnZ--/"
+                         "w_720,c_limit,q_auto/qqamoxbcbgu7fhok8exh.mp4")
 
     def test_an_already_transformed_url_is_not_transformed_twice(self):
         from store.images import sized
@@ -1469,12 +1473,72 @@ class GallerySizesTest(StoreTestCase):
         # Nothing anywhere asks for the untransformed master.
         self.assertNotIn("s--b--/detail.jpg", html)
 
-    def test_the_video_url_is_never_resized(self):
+    def test_the_video_is_capped_at_its_own_width_and_never_reformatted(self):
         html = self.client.get("/item/L1").get_data(as_text=True)
-        self.assertIn("s--c--/demo.mp4", html)
-        self.assertNotIn("w_900,c_limit,f_auto,q_auto/demo.mp4", html)
+        self.assertIn("w_720,c_limit,q_auto/demo.mp4", html)          # capped, not the master
+        self.assertNotIn("f_auto,q_auto/demo.mp4", html)              # f_auto is for images
+        self.assertNotIn("w_900", html.split("demo.mp4")[0].rsplit("<", 1)[-1])
 
     def test_the_hero_still_comes_from_our_own_cache(self):
         html = self.client.get("/item/L1").get_data(as_text=True)
         self.assertIn('id="stageImg" src="/img/L1"', html)
         self.assertNotIn("s--a--/hero.jpg", html)
+
+class VideoSizeTest(unittest.TestCase):
+    """Video is capped too, and its thumbnail is a frame of it.
+
+    The master on 45608 is 76 MB; at 720px it is 1.4 MB, and a 120px still
+    frame is 1.9 KB (measured 2026-09-09)."""
+
+    VID = "https://images.salsify.com/video/upload/s--lX-r9FnZ--/qqamoxbcbgu7fhok8exh.mp4"
+    IMG = "https://images.salsify.com/image/upload/s--boSg-_7H--/a.jpg"
+
+    def test_video_is_capped_but_not_reformatted(self):
+        from store.images import sized
+        self.assertEqual(sized(self.VID, 720),
+                         "https://images.salsify.com/video/upload/s--lX-r9FnZ--/"
+                         "w_720,c_limit,q_auto/qqamoxbcbgu7fhok8exh.mp4")
+        # f_auto is for images only: on a video it invites a container swap.
+        self.assertNotIn("f_auto", sized(self.VID, 720))
+        self.assertIn("f_auto", sized(self.IMG, 720))
+
+    def test_a_poster_is_a_frame_rendered_as_a_jpeg(self):
+        from store.images import poster
+        self.assertEqual(poster(self.VID, 120),
+                         "https://images.salsify.com/video/upload/s--lX-r9FnZ--/"
+                         "w_120,c_limit,f_auto,q_auto/qqamoxbcbgu7fhok8exh.jpg")
+
+    def test_only_a_video_has_a_poster(self):
+        from store.images import poster
+        for u in (self.IMG, "https://elsewhere.test/a.mp4", "/img/L1", "", None):
+            self.assertEqual(poster(u, 120), "")
+        self.assertEqual(poster(self.VID, 0), "")
+
+
+class GalleryVideoTest(StoreTestCase):
+    MEDIA = [{"url": "https://images.salsify.com/image/upload/s--a--/hero.jpg", "kind": "image"},
+             {"url": "https://images.salsify.com/video/upload/s--c--/demo.mp4", "kind": "video"}]
+
+    def setUp(self):
+        super().setUp()
+        items = [({**it, "media": self.MEDIA} if it["sku"] == "L1" else it) for it in CATALOG["items"]]
+        self.ingest("catalog", {**CATALOG, "items": items})
+        self.ingest("customers", CUSTOMERS); self.ingest("invites", INVITES)
+        self.use_invite("ross-xyz")
+        self.html = self.client.get("/item/L1").get_data(as_text=True)
+
+    def test_the_video_thumbnail_shows_a_frame_of_it(self):
+        self.assertIn("w_120,c_limit,f_auto,q_auto/demo.jpg", self.html)
+        self.assertIn('class="play"', self.html)            # ...with the triangle over it
+
+    def test_pressing_it_loads_the_capped_video_not_the_master(self):
+        self.assertIn("w_720,c_limit,q_auto/demo.mp4", self.html)
+        self.assertNotIn("s--c--/demo.mp4", self.html)      # never the master
+
+    def test_the_player_gets_a_poster_to_show_before_it_is_pressed(self):
+        self.assertIn('data-poster="https://images.salsify.com/video/upload/s--c--/'
+                      'w_900,c_limit,f_auto,q_auto/demo.jpg"', self.html)
+        self.assertIn("vid.poster", self.html)
+
+    def test_it_still_waits_for_a_click_before_fetching_the_video(self):
+        self.assertIn('preload="metadata"', self.html)

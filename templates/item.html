@@ -19,9 +19,12 @@
         {% for m in gallery %}
         <button type="button" class="thumb{% if loop.first %} on{% endif %}"
                 data-kind="{{ m.kind }}"
-                data-src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url else m.url|sized(STAGE_WIDTH) }}"
+                data-src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url
+                              else (m.url|sized(VIDEO_WIDTH) if m.kind == 'video' else m.url|sized(STAGE_WIDTH)) }}"
+                {% if m.kind == 'video' %}data-poster="{{ m.url|poster(STAGE_WIDTH) }}"{% endif %}
                 aria-label="{{ 'Video' if m.kind == 'video' else 'View %d'|format(loop.index) }}">
-          {% if m.kind == 'video' %}<span class="play" title="Watch">&#9654;</span>
+          {% if m.kind == 'video' %}{% set frame = m.url|poster(THUMB_WIDTH) %}
+            {% if frame %}<img src="{{ frame }}" alt="" loading="lazy">{% endif %}<span class="play" title="Watch">&#9654;</span>
           {% else %}<img src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url else m.url|sized(THUMB_WIDTH) }}" alt="" loading="lazy">{% endif %}
         </button>
         {% endfor %}
@@ -80,7 +83,10 @@
     btn.addEventListener('click', function(){
       document.querySelectorAll('.thumb').forEach(function(b){ b.classList.toggle('on', b === btn); });
       const src = btn.dataset.src, isVideo = btn.dataset.kind === 'video';
-      if (vid) { vid.pause(); vid.hidden = !isVideo; if (isVideo && vid.src !== src) vid.src = src; }
+      if (vid) {
+        vid.pause(); vid.hidden = !isVideo;
+        if (isVideo) { vid.poster = btn.dataset.poster || ''; if (vid.src !== src) vid.src = src; }
+      }
       if (img) { img.hidden = isVideo; if (!isVideo && src) img.src = src; }
     });
   });
