@@ -15,17 +15,49 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import threading
 from typing import Any
 
 log = logging.getLogger("store.images")
 
 MAX_EDGE = 900          # px; enough for a product page, small enough to keep Postgres modest
+# What a gallery url is asked for, by slot. Measured on a real asset 2026-09-09:
+# as Salsify ships it 13,265 KB, at w_900 70 KB, at w_120 2.9 KB.
+STAGE_WIDTH = 900
+THUMB_WIDTH = 120
 JPEG_QUALITY = 82
 FETCH_TIMEOUT = 20.0
 BATCH = 400             # per background pass
 _lock = threading.Lock()
 _running = False
+
+
+# Salsify serves images through Cloudinary, whose transformations live in the
+# url path -- but AFTER the signature segment, not before it:
+#
+#   .../image/upload/w_120/s--boSg-_7H--/asset.jpg   -> 404
+#   .../image/upload/s--boSg-_7H--/w_120/asset.jpg   -> 200, 2.9 KB
+#
+# This matters more than it looks. Salsify hands out the untouched master: the
+# asset behind one 56px gallery thumbnail is 13 MB and 6648px wide, so an item
+# page with seven views was ~90 MB before this (measured 2026-09-09). The hero
+# is unaffected either way -- it is resized once into our own cache.
+_SALSIFY_IMAGE = re.compile(
+    r"^(https://images\.salsify\.com/image/upload/s--[^/]+--/)(?!(?:[a-z]+_[^/]+,?)+/)(.+)$")
+
+
+def sized(url: Any, width: int) -> str:
+    """``url`` asked for at ``width`` px, where that is something we can ask.
+
+    Only Salsify image urls can be resized; a video, a NetSuite link, an
+    already-transformed url or anything unrecognised comes back untouched, so
+    this is safe to wrap around every url in a template."""
+    u = str(url or "")
+    m = _SALSIFY_IMAGE.match(u)
+    if not m or not width:
+        return u
+    return f"{m.group(1)}w_{int(width)},c_limit,f_auto,q_auto/{m.group(2)}"
 
 
 def _resize(raw: bytes) -> tuple[bytes, str]:

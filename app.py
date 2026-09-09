@@ -9,7 +9,7 @@ from datetime import timedelta
 from flask import Flask
 
 from config import Config, load_config
-from store import admin, ingest, shop
+from store import admin, images, ingest, shop
 from store.db import Store, make_engine, msrp_price
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -71,6 +71,11 @@ def create_app(cfg: Config | None = None) -> Flask:
         return round(min(caps), 2) if caps else None
 
     app.jinja_env.globals["suggest_cap"] = _suggest_cap
+    # Gallery urls are asked for at the size the slot needs; Salsify ships the
+    # untouched master otherwise (13 MB for one 56px thumbnail).
+    app.jinja_env.filters["sized"] = images.sized
+    app.jinja_env.globals["STAGE_WIDTH"] = images.STAGE_WIDTH
+    app.jinja_env.globals["THUMB_WIDTH"] = images.THUMB_WIDTH
 
     @app.after_request
     def _headers(resp):

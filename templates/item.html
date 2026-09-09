@@ -19,10 +19,10 @@
         {% for m in gallery %}
         <button type="button" class="thumb{% if loop.first %} on{% endif %}"
                 data-kind="{{ m.kind }}"
-                data-src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url else m.url }}"
+                data-src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url else m.url|sized(STAGE_WIDTH) }}"
                 aria-label="{{ 'Video' if m.kind == 'video' else 'View %d'|format(loop.index) }}">
           {% if m.kind == 'video' %}<span class="play" title="Watch">&#9654;</span>
-          {% else %}<img src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url else m.url }}" alt="" loading="lazy">{% endif %}
+          {% else %}<img src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url else m.url|sized(THUMB_WIDTH) }}" alt="" loading="lazy">{% endif %}
         </button>
         {% endfor %}
       </div>
