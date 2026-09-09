@@ -121,8 +121,23 @@ customers = sa.Table(
     sa.Column("rep_name", sa.String(120), default=""),
     sa.Column("house_account", sa.Boolean, nullable=False, default=False),
     sa.Column("accounts_json", sa.Text, nullable=False, default="{}"),   # {company: customer id in that subsidiary}
+    # How this account is priced (JJ / Goodwill, 2026-09-09), set in AOI and fed
+    # here: "offer" is the sheet everyone has had — wholesale and a blank box —
+    # and "firm" replaces it with the final price we will take, per SKU. The
+    # store never learns why a firm price is what it is; it only shows it.
+    sa.Column("price_mode", sa.String(10), nullable=False, default="offer"),
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
+)
+
+# The firm price per customer + SKU, computed in AOI and pushed as a full
+# snapshot. No basis, no markup, no cost: one number per line, which is the
+# whole point of a firm-price account.
+customer_prices = sa.Table(
+    "customer_prices", metadata,
+    sa.Column("customer_id", sa.String(32), primary_key=True),
+    sa.Column("sku", sa.String(64), primary_key=True),
+    sa.Column("price", sa.Numeric(12, 2), nullable=False),
 )
 
 customer_emails = sa.Table(
@@ -311,10 +326,20 @@ def now_iso() -> str:
 BUYER_CLASSES: tuple[str, ...] = ("independent", "regional", "liquidator")
 DEFAULT_BUYER_CLASS = "regional"
 
+# How an account is priced. Anything unrecognised -- and a feed from an older AOI
+# that sends nothing at all -- is the sheet everyone already has.
+PRICE_MODES: tuple[str, ...] = ("offer", "firm")
+DEFAULT_PRICE_MODE = "offer"
+
 
 def _clean_class(value: Any) -> str:
     v = str(value or "").strip().lower()
     return v if v in BUYER_CLASSES else DEFAULT_BUYER_CLASS
+
+
+def clean_price_mode(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    return v if v in PRICE_MODES else DEFAULT_PRICE_MODE
 
 
 def make_engine(url: str) -> Engine:
@@ -414,6 +439,7 @@ class Store:
                 "buyer_class": str(it.get("buyer_class") or "independent"), "volume_tier": str(it.get("volume_tier") or ""),
                 "rep_name": str(it.get("rep_name") or ""), "house_account": bool(it.get("house_account")),
                 "accounts_json": json.dumps({str(k): str(v) for k, v in (it.get("accounts") or {}).items()}, sort_keys=True),
+                "price_mode": clean_price_mode(it.get("price_mode")),
                 "active": True, "updated_at": now,
             })
             for e in it.get("emails") or []:
@@ -444,6 +470,52 @@ class Store:
             conn.execute(feed_runs.insert().values(kind="curation", count=len(rows), as_of=as_of,
                                                    generated_at=generated_at, received_at=now))
         return len(rows)
+
+    def ingest_prices(self, items: Iterable[dict[str, Any]], *, as_of: str | None, generated_at: str | None) -> int:
+        """Firm prices, one entry per firm-priced customer:
+        ``[{"customer_id": "717935", "prices": {"SKU": 6.83, ...}}]``.
+
+        A full snapshot like every other feed: the table is replaced by what
+        arrives, so a customer moved back to offer mode -- or an empty list,
+        which means there are no firm accounts at all -- simply stops having
+        prices. Returns the number of customer entries, matching the envelope's
+        ``count``."""
+        now = now_iso()
+        rows: dict[tuple[str, str], dict[str, Any]] = {}
+        entries = 0
+        for it in items:
+            cid = str(it.get("customer_id") or "").strip()
+            if not cid:
+                continue
+            entries += 1
+            for sku, price in (it.get("prices") or {}).items():
+                s = str(sku).strip()
+                try:
+                    p = round(float(price), 2)
+                except (TypeError, ValueError):
+                    continue
+                if not s or p <= 0:
+                    continue                       # a zero is not a price we would honour
+                rows[(cid, s)] = {"customer_id": cid, "sku": s, "price": p}
+        with self.engine.begin() as conn:
+            conn.execute(sa.delete(customer_prices))
+            values = list(rows.values())
+            step = 300                             # SQLite's bound-variable cap, as in _upsert
+            for i in range(0, len(values), step):
+                conn.execute(customer_prices.insert(), values[i:i + step])
+            conn.execute(feed_runs.insert().values(kind="prices", count=entries, as_of=as_of,
+                                                   generated_at=generated_at, received_at=now))
+        return entries
+
+    def firm_prices_for(self, customer_id: str) -> dict[str, float]:
+        """``{sku: price}`` for one customer, empty when they have none."""
+        cid = str(customer_id or "").strip()
+        if not cid:
+            return {}
+        with self.engine.connect() as conn:
+            rows = conn.execute(sa.select(customer_prices.c.sku, customer_prices.c.price)
+                                .where(customer_prices.c.customer_id == cid)).all()
+        return {str(sku): float(price) for sku, price in rows}
 
     def ingest_invites(self, items: Iterable[dict[str, Any]], *, as_of: str | None, generated_at: str | None) -> int:
         """Full snapshot of invite links: anything AOI no longer sends is revoked."""
@@ -746,13 +818,37 @@ class Store:
         return col == vals[0] if len(vals) == 1 else col.in_(vals)
 
     @classmethod
+    def _priced_for(cls, customer_id: str, max_price: float | None = None):
+        """Correlated EXISTS on ``customer_prices``: this SKU carries a firm
+        price for that customer (optionally at or under ``max_price``). A
+        subquery rather than a list of SKUs because a firm account can hold
+        thousands of them and SQLite counts bound variables."""
+        conds = [customer_prices.c.customer_id == str(customer_id),
+                 customer_prices.c.sku == products.c.sku,
+                 customer_prices.c.price > 0]
+        if max_price:
+            conds.append(customer_prices.c.price <= float(max_price))
+        return sa.select(sa.literal(1)).where(*conds).exists()
+
+    @classmethod
     def _product_filter(cls, *, brand=None, category=None, subcategory=None, q=None, companies=None,
-                        min_units=None, min_cases=None, new_since=None, featured_only=False):
+                        min_units=None, min_cases=None, new_since=None, featured_only=False,
+                        max_price=None, firm_customer_id=None):
         """Every word of ``q`` must appear somewhere in SKU, description, brand,
         category or subcategory; ``companies`` limits to the subsidiaries the
         buyer holds an account with (or the invite covers). ``brand`` /
-        ``category`` / ``subcategory`` each take one value or a list."""
+        ``category`` / ``subcategory`` each take one value or a list.
+
+        ``max_price`` is "under $__" measured on **the price this buyer is
+        actually looking at**: their own firm price where ``firm_customer_id``
+        is given, the wholesale anchor otherwise.  A firm buyer sees only the
+        SKUs they have a price for, so ``firm_customer_id`` narrows the sheet
+        on its own as well."""
         conds = [products.c.active.is_(True), products.c.qty_available > 0]
+        if firm_customer_id:
+            conds.append(cls._priced_for(firm_customer_id, max_price))
+        elif max_price:
+            conds.append(products.c.wholesale <= float(max_price))
         if companies is not None:
             conds.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
         for col, val in ((products.c.brand, brand), (products.c.category, category),
@@ -778,11 +874,13 @@ class Store:
                       q: str | None = None, sort: str = "default", min_units: int | None = None,
                       min_cases: int | None = None, companies: Iterable[str] | None = None,
                       new_since: str | None = None, featured_only: bool = False,
+                      max_price: float | None = None, firm_customer_id: str | None = None,
                       limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
                                                                q=q, companies=companies, min_units=min_units,
                                                                min_cases=min_cases, new_since=new_since,
-                                                               featured_only=featured_only))
+                                                               featured_only=featured_only, max_price=max_price,
+                                                               firm_customer_id=firm_customer_id))
         stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
@@ -790,19 +888,25 @@ class Store:
     def count_products(self, *, brand=None, category=None, subcategory=None, q: str | None = None,
                        min_units: int | None = None, min_cases: int | None = None,
                        companies: Iterable[str] | None = None, new_since: str | None = None,
-                       featured_only: bool = False) -> int:
+                       featured_only: bool = False, max_price: float | None = None,
+                       firm_customer_id: str | None = None) -> int:
         stmt = sa.select(sa.func.count()).select_from(products).where(
             *self._product_filter(brand=brand, category=category, subcategory=subcategory, q=q, companies=companies,
                                   min_units=min_units, min_cases=min_cases, new_since=new_since,
-                                  featured_only=featured_only))
+                                  featured_only=featured_only, max_price=max_price,
+                                  firm_customer_id=firm_customer_id))
         with self.engine.connect() as conn:
             return int(conn.execute(stmt).scalar() or 0)
 
     def facets(self, *, brand=None, category=None,
-               companies: Iterable[str] | None = None) -> dict[str, list[Any]]:
+               companies: Iterable[str] | None = None,
+               firm_customer_id: str | None = None) -> dict[str, list[Any]]:
         """Filter choices that still return something: categories narrow to the
-        chosen brands, subcategories to brands + categories."""
+        chosen brands, subcategories to brands + categories.  A firm-price buyer
+        is offered only the brands their own priced SKUs are in."""
         base = [products.c.active.is_(True), products.c.qty_available > 0]
+        if firm_customer_id:
+            base.append(self._priced_for(firm_customer_id))
         if companies is not None:
             base.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
         brand_cond = self._in_any(products.c.brand, brand)
@@ -1125,6 +1229,7 @@ def _cust(row) -> dict[str, Any]:
         accounts = {c: d["customer_id"] for c in ALL_COMPANIES}
     d["accounts"] = accounts
     d["companies"] = [c for c in ALL_COMPANIES if c in accounts] or list(accounts)
+    d["price_mode"] = clean_price_mode(d.get("price_mode"))
     return d
 
 
@@ -1157,7 +1262,8 @@ def _ensure_columns(eng: Engine) -> None:
                            "published_basis": "VARCHAR(20) NOT NULL DEFAULT ''",
                            "published_label": "VARCHAR(40) NOT NULL DEFAULT ''",
                            "published_disc_pct": "INTEGER NOT NULL DEFAULT 0"},
-              "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'"},
+              "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'",
+                            "price_mode": "VARCHAR(10) NOT NULL DEFAULT 'offer'"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
               "login_tokens": {"subject": "VARCHAR(200)"},
               "rounds": {"opened_at": "VARCHAR(32)"},

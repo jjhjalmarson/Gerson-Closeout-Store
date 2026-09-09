@@ -102,8 +102,9 @@
   {% elif buyer %}
   <span class="muted">{{ buyer.name }}{% if buyer.rep_name %} · your rep: {{ buyer.rep_name }}{% endif %}</span>
   <nav>
-    <a href="{{ url_for('shop.home') }}">Offer sheet</a>
-    <a href="{{ url_for('shop.offer') }}"><b>Review offer{% if draft_count %} ({{ draft_count }}){% endif %}</b></a>
+    {% set firm_nav = buyer.price_mode == 'firm' %}
+    <a href="{{ url_for('shop.home') }}">{{ 'Your prices' if firm_nav else 'Offer sheet' }}</a>
+    <a href="{{ url_for('shop.offer') }}"><b>{{ 'Review order request' if firm_nav else 'Review offer' }}{% if draft_count %} ({{ draft_count }}){% endif %}</b></a>
     <a href="{{ url_for('shop.offers') }}">Submitted</a>
     <form method="post" action="{{ url_for('shop.logout') }}" style="margin:0"><button class="sec" type="submit">{{ 'Leave' if buyer.kind == 'invite' else 'Sign out' }}</button></form>
   </nav>

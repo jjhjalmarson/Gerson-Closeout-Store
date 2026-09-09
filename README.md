@@ -19,11 +19,35 @@ the same key. See `docs/closeout-platform-brief.md` §0 / §11 in the AOI repo.
 |---|---|---|
 | `catalog` | SKU, description, image, brand, category, case / master / inner pack, wholesale, approximate quantity, company, `listed_since` (first run on the sheet; null = before AOI kept track), `price_changed_at`, `price_was` | cost, receipt date, age, bucket, advance rate, floors, tier, state |
 | `invites` | invite token, label (who it went to), contact, email, companies, expiry | anything else |
-| `customers` | allowlisted NetSuite accounts (id, company, login emails, rep) — may also sign in by magic link | AR, order history, credit |
+| `customers` | allowlisted NetSuite accounts (id, company, login emails, rep, `price_mode`) — may also sign in by magic link | AR, order history, credit |
 | `curation` | per-customer SKU lists (kept for AOI compatibility; not shown on the sheet) | the history behind the ranking |
+| `prices` | the firm price per customer + SKU: `[{customer_id, prices: {sku: number}}]` | how it was arrived at — basis, markup, cost |
 
 The catalog feed still carries the ladder price for AOI's own use; **the sheet
 never shows it** — buyers see original wholesale and type what they will pay.
+
+## Two kinds of account (JJ / Goodwill, 2026-09-09)
+
+`price_mode` on the allowlist row decides which surface a signed-in account
+sees, and it is set in AOI:
+
+* **`offer`** (the default, and everyone else — invite links and buyers who
+  signed up here) — the sheet above: original wholesale, a blank offer box, the
+  buyer's own margin tools and the capped suggestion.
+* **`firm`** — **"Your price"**, the number AOI computed for that account,
+  instead of wholesale. No offer box, no suggestion, no % of wholesale; a SKU
+  we have not quoted them is off their sheet entirely and reads "price on
+  request" on its item page. Quantities work as before, the line price is set
+  **server-side** from the stored price (whatever the client posts is ignored),
+  and submitting rides the same pipeline with `price_mode: "firm"` in the offer
+  payload so AOI's desk knows it is an order at prices we already quoted.
+
+`prices` is a full snapshot like the other feeds; an **empty** `items` list is
+legal and means no account is on firm prices (unlike `customers` / `invites`,
+where an empty feed is refused because it would wipe the allowlist).
+
+Both kinds of sheet carry an **"Under $__"** filter, measured on whichever
+price that buyer can see.
 
 ## What brings a buyer back
 

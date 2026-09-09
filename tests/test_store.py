@@ -128,7 +128,7 @@ class IngestGateTest(StoreTestCase):
         self.assertEqual(self.ingest("curation", {**CURATION, "count": 0, "items": []}).status_code, 202)
 
     def test_bad_kind_and_body(self):
-        self.assertEqual(self.ingest("prices", CATALOG).status_code, 400)
+        self.assertEqual(self.ingest("costs", CATALOG).status_code, 400)      # "prices" is a kind now; this never will be
         self.assertEqual(self.ingest("catalog", {"items": "nope"}).status_code, 400)
 
     def test_schema_has_no_sensitive_columns(self):
@@ -1120,3 +1120,187 @@ class GalleryTest(StoreTestCase):
         self.client.get("/item/L1")
         ev = [e for e in self.store.events_since(0) if e["kind"] == "item_viewed"][-1]
         self.assertEqual((ev["payload"]["media"], ev["payload"]["videos"]), (4, 1))
+
+
+# --- firm prices (JJ / Goodwill, 2026-09-09) ---------------------------------
+# The allowlist row carries a price mode; on a firm one AOI sends a price per
+# SKU and the whole bidding surface is replaced by it.
+
+FIRM_CUSTOMERS = {**CUSTOMERS, "items": [{**CUSTOMERS["items"][0], "price_mode": "firm"}]}
+PRICES = {"kind": "prices", "as_of": "2026-09-09", "generated_at": "2026-09-09T07:30:00+00:00", "count": 1,
+          "items": [{"customer_id": "26003", "prices": {"L1": 6.83}}]}
+
+
+class PriceModeIngestTest(StoreTestCase):
+    def test_price_mode_rides_the_customers_feed_and_defaults_to_offer(self):
+        self.ingest("customers", CUSTOMERS)                      # an older AOI sends no mode at all
+        self.assertEqual(self.store.customer("26003")["price_mode"], "offer")
+        self.assertEqual(self.ingest("customers", FIRM_CUSTOMERS).status_code, 202)
+        self.assertEqual(self.store.customer("26003")["price_mode"], "firm")
+        odd = {**CUSTOMERS, "items": [{**CUSTOMERS["items"][0], "price_mode": "wholesale-ish"}]}
+        self.ingest("customers", odd)                            # anything unrecognised is the safe lane
+        self.assertEqual(self.store.customer("26003")["price_mode"], "offer")
+
+    def test_prices_are_a_full_snapshot_and_an_empty_one_is_legal(self):
+        self.ingest("customers", FIRM_CUSTOMERS)
+        r = self.ingest("prices", PRICES)
+        self.assertEqual((r.status_code, r.get_json()["count"]), (202, 1))
+        self.assertEqual(self.store.firm_prices_for("26003"), {"L1": 6.83})
+        # a second push replaces the lot: L1 moves, T2 arrives, nothing is merged
+        self.ingest("prices", {**PRICES, "items": [{"customer_id": "26003", "prices": {"L1": 7.0, "T2": 21.5}}]})
+        self.assertEqual(self.store.firm_prices_for("26003"), {"L1": 7.0, "T2": 21.5})
+        # and an empty list is how AOI says "no firm accounts" -- unlike customers / invites,
+        # where an empty feed would wipe the allowlist and is refused
+        r = self.ingest("prices", {**PRICES, "count": 0, "items": []})
+        self.assertEqual((r.status_code, r.get_json()["count"]), (202, 0))
+        self.assertEqual(self.store.firm_prices_for("26003"), {})
+        self.assertEqual(self.store.firm_prices_for(""), {})
+        self.assertIn("prices", {f["kind"] for f in self.store.feed_status()})
+
+    def test_zero_and_junk_prices_never_become_a_price(self):
+        self.ingest("prices", {**PRICES, "items": [{"customer_id": "26003", "prices": {"L1": 0, "T2": "x", "Z": 4}},
+                                                   {"customer_id": "", "prices": {"L1": 9}}]})
+        self.assertEqual(self.store.firm_prices_for("26003"), {"Z": 4.0})
+
+    def test_how_a_firm_price_was_reached_is_refused_at_the_door(self):
+        for bad in ({"customer_id": "26003", "prices": {"L1": 6.83}, "firm_basis": "cost_plus"},
+                    {"customer_id": "26003", "prices": {"L1": 6.83}, "firm_markup_pct": 5.0},
+                    {"customer_id": "26003", "prices": {"L1": 6.83}, "markup": 1.05},
+                    {"customer_id": "26003", "prices": {"L1": 6.83}, "price_basis": "ladder"}):
+            self.assertEqual(self.ingest("prices", {**PRICES, "items": [bad]}).status_code, 422)
+        self.assertEqual(self.store.firm_prices_for("26003"), {})
+
+
+class FirmBuyerSheetTest(StoreTestCase):
+    def setUp(self):
+        super().setUp()
+        self.ingest("catalog", CATALOG)
+        self.ingest("customers", FIRM_CUSTOMERS)
+        self.ingest("prices", PRICES)
+        self.login()
+
+    def test_the_sheet_is_our_price_and_nothing_to_bid_with(self):
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Your price", html)
+        self.assertIn("$6.83", html)
+        self.assertIn("Lantern", html)
+        self.assertNotIn("Tree", html)                              # T2 is not quoted to them: not on their sheet
+        self.assertNotIn("$25.00", html)                            # no wholesale anywhere
+        self.assertNotIn('name="price[L1]"', html)                  # no offer box
+        self.assertNotIn("targetMargin", html)                      # no margin tools
+        self.assertNotIn("MAX_DISC", html)                          # and no suggestion block at all
+        self.assertNotIn("% of wholesale", html)
+        self.assertIn("MSRP", html); self.assertIn("$62.99", html)   # MSRP still anchors it
+        self.assertIn('name="qty[L1]"', html)
+        self.assertIn("order request", html)
+
+    def test_the_item_page_quotes_or_says_price_on_request(self):
+        page = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertIn("your price", page); self.assertIn("$6.83", page)
+        self.assertNotIn("original wholesale", page); self.assertNotIn("$25.00", page)
+        self.assertNotIn('name="price[L1]"', page)
+        self.assertIn('name="qty[L1]"', page)
+        other = self.client.get("/item/T2").get_data(as_text=True)
+        self.assertIn("Price on request", other)
+        self.assertNotIn('name="qty[T2]"', other)                   # nothing to order until we quote it
+        self.assertNotIn("$100.00", other)
+
+    def test_under_a_dollar_figure_filters_on_the_price_the_buyer_can_see(self):
+        self.ingest("prices", {**PRICES, "items": [{"customer_id": "26003", "prices": {"L1": 6.83, "T2": 21.5}}]})
+        both = self.client.get("/?max_price=25").get_data(as_text=True)
+        self.assertIn("Lantern", both); self.assertIn("Tree", both)
+        under7 = self.client.get("/?max_price=7").get_data(as_text=True)
+        self.assertIn("Lantern", under7); self.assertNotIn("Tree", under7)
+        self.assertIn('name="max_price" type="number" min="0" step="0.01" value="7"', under7)
+        # composes with the other filters, and rides paging
+        self.assertIn("Nothing matches",
+                      self.client.get("/?max_price=7&brand=Park+Hill+Collection").get_data(as_text=True))
+        self.assertIn("max_price=7", self.client.get("/?max_price=7&page=1").get_data(as_text=True))
+        self.assertEqual(self.client.get("/?max_price=0.01").status_code, 200)
+
+    def test_an_offer_buyer_gets_the_same_filter_on_wholesale(self):
+        self.client.post("/logout")
+        self.ingest("invites", INVITES)
+        self.use_invite("ross-xyz")
+        html = self.client.get("/?max_price=50").get_data(as_text=True)
+        self.assertIn("Lantern", html); self.assertNotIn("Tree", html)       # $25 in, $100 out
+        self.assertIn("$25.00", html)                                        # and the sheet is otherwise unchanged
+        self.assertIn('name="price[L1]"', html)
+
+
+class FirmBuyerOrderTest(StoreTestCase):
+    def setUp(self):
+        super().setUp()
+        self.ingest("catalog", CATALOG)
+        self.ingest("customers", FIRM_CUSTOMERS)
+        self.ingest("prices", PRICES)
+        self.login()
+
+    def test_the_line_is_priced_by_us_whatever_the_buyer_posts(self):
+        self.client.post("/offer/set", data={"qty[L1]": "12", "price[L1]": "0.25"})
+        self.assertEqual(self.store.draft("cust:26003"), {"L1": {"qty": 12, "price": 6.83}})
+        r = self.client.post("/offer/line", json={"sku": "L1", "qty": "18", "price": "999"}).get_json()
+        self.assertEqual(r["line"], {"qty": 18, "price": 6.83})
+        # a SKU we have not quoted them cannot be ordered at any price
+        self.client.post("/offer/set", data={"qty[T2]": "8", "price[T2]": "35"})
+        self.assertNotIn("T2", self.store.draft("cust:26003"))
+
+    def test_review_reads_as_an_order_request_at_our_prices(self):
+        self.client.post("/offer/set", data={"qty[L1]": "12"})
+        html = self.client.get("/offer").get_data(as_text=True)
+        self.assertIn("Your order request", html)
+        self.assertIn("Your price", html); self.assertIn("$6.83", html); self.assertIn("$81.96", html)   # 12 x 6.83
+        self.assertNotIn("$25.00", html); self.assertNotIn("% of wholesale", html)
+        self.assertNotIn('name="price[L1]"', html); self.assertNotIn("targetMargin", html)
+        self.assertIn("Send order request", html)
+        rows = self.client.get("/offer.csv").get_data(as_text=True).strip().splitlines()
+        self.assertNotIn("wholesale", rows[0]); self.assertIn("price", rows[0])
+        self.assertIn("L1,Lantern", rows[1]); self.assertIn("6.83", rows[1])
+        self.assertNotIn("25.0", rows[1])
+
+    def test_submitting_carries_price_mode_firm_and_our_prices(self):
+        self.client.post("/offer/set", data={"qty[L1]": "12", "price[L1]": "0.25"})
+        r = self.client.post("/offer/submit", data={"company": "Goodwill MN", "email": "jen@goodwill.test"})
+        self.assertEqual(r.status_code, 200)
+        page = r.get_data(as_text=True)
+        self.assertIn("Order request received", page); self.assertNotIn("acceptance or a counter", page)
+        it = self.store.pull_outbox()[0]
+        p = it["payload"]
+        self.assertEqual((it["kind"], p["price_mode"], p["customer_id"]), ("offer", "firm", "26003"))
+        self.assertEqual([(l["sku"], l["qty"], l["offer_price"]) for l in p["lines"]], [("L1", 12, 6.83)])
+        self.assertEqual(p["total"], 81.96)
+        self.assertEqual(p["wholesale_total"], 300.0)                   # AOI still gets the anchor; the buyer never did
+        buyer_mail = self.sent[-1]
+        self.assertIn("We have your order request", buyer_mail["subject"])
+        self.assertIn("order request", buyer_mail["html"])
+        self.assertIn("confirm", buyer_mail["html"])
+        for never in ("Wholesale", "% whsl", "$25.00"):
+            self.assertNotIn(never, buyer_mail["html"])
+        self.assertNotIn("Whsl", buyer_mail["body"])
+        self.assertEqual(buyer_mail["attachments"][0][0], "order-request-OF-%d.csv" % it["id"])
+        self.assertNotIn(b"25.0", buyer_mail["attachments"][0][1])
+
+    def test_an_offer_buyer_is_untouched_and_says_so_in_the_payload(self):
+        self.client.post("/logout")
+        self.ingest("customers", CUSTOMERS)                      # back to offer mode
+        self.ingest("prices", {**PRICES, "count": 0, "items": []})
+        with self.store.engine.begin() as conn:                  # so login() cannot pick up the spent token
+            conn.execute(sa.delete(D.login_tokens))
+        self.login()
+        self.client.post("/offer/set", data={"qty[L1]": "24", "price[L1]": "10"})
+        self.assertEqual(self.store.draft("cust:26003"), {"L1": {"qty": 24, "price": 10.0}})
+        html = self.client.get("/offer").get_data(as_text=True)
+        self.assertIn("Your offer", html); self.assertIn("% of wholesale", html)
+        self.client.post("/offer/submit", data={"company": "Adeline Collective", "email": "donna-n@live.com"})
+        p = self.store.pull_outbox()[0]["payload"]
+        self.assertEqual(p["price_mode"], "offer")
+        self.assertEqual([(l["sku"], l["offer_price"]) for l in p["lines"]], [("L1", 10.0)])
+        self.assertIn("We have your offer", self.sent[-1]["subject"])
+
+    def test_a_price_that_moves_moves_the_line_with_it(self):
+        self.client.post("/offer/set", data={"qty[L1]": "12"})
+        self.ingest("prices", {**PRICES, "items": [{"customer_id": "26003", "prices": {"L1": 7.5}}]})
+        html = self.client.get("/offer").get_data(as_text=True)
+        self.assertIn("$7.50", html); self.assertIn("$90.00", html)
+        self.ingest("prices", {**PRICES, "count": 0, "items": []})       # no longer quoted: the line goes
+        self.assertIn("Nothing on it yet", self.client.get("/offer").get_data(as_text=True))

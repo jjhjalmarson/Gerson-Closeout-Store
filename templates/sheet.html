@@ -1,10 +1,18 @@
 {% extends "base.html" %}
 {% from "_macros.html" import pack %}
+{# A firm-price account (JJ / Goodwill, 2026-09-09) is shown the price we will
+   take, per item, and nothing to bid with: no wholesale, no offer box, no
+   suggestion. Everyone else gets the sheet exactly as before. #}
+{% set firm = buyer.price_mode == 'firm' %}
 {% block body %}
-<h1>Closeout offer sheet</h1>
-{% if featured_total %}<p class="newline featured"><a href="{{ url_for('shop.home', featured=1) }}"><b>{{ featured_total }} featured</b> item{{ '' if featured_total == 1 else 's' }} — our sharpest prices, and we will look hard at any offer on them</a>{% if featured_flag %} <span class="muted">· showing just those</span>{% endif %}</p>{% endif %}
+<h1>{{ 'Your closeout price list' if firm else 'Closeout offer sheet' }}</h1>
+{% if featured_total %}<p class="newline featured"><a href="{{ url_for('shop.home', featured=1) }}"><b>{{ featured_total }} featured</b> item{{ '' if featured_total == 1 else 's' }} — our sharpest prices{% if not firm %}, and we will look hard at any offer on them{% endif %}</a>{% if featured_flag %} <span class="muted">· showing just those</span>{% endif %}</p>{% endif %}
 {% if new_total %}<p class="newline"><a href="{{ url_for('shop.home', new=1, sort='newest') }}"><b>{{ new_total }} new</b> item{{ '' if new_total == 1 else 's' }} added to the sheet in the last {{ new_days }} days</a>{% if new_flag %} <span class="muted">· showing just those</span>{% endif %}</p>{% endif %}
+{% if firm %}
+<p class="muted">These are your prices — the final unit price on every item we have quoted you, with no back-and-forth. Enter a quantity and your line saves as you type; review and send when you are done, and we confirm and ship. Quantities snap to whole packs.</p>
+{% else %}
 <p class="muted">Original wholesale and pack sizes are shown for every item. Enter a quantity and the unit price you are offering — lines save as you type — then review and submit when you are done. Our team replies by email with an acceptance or a counter. Quantities snap to whole packs.</p>
+{% endif %}
 <form method="get" class="filters" id="filters">
   <div class="fields">
     {# Multi-select on all three: no auto-submit, because it fires on the first
@@ -26,6 +34,11 @@
         <input class="narrow" name="min_units" type="number" min="0" step="1" value="{{ min_units }}" placeholder="any"></label>
       <label class="f"><span>Min cases</span>
         <input class="narrow" name="min_cases" type="number" min="0" step="1" value="{{ min_cases }}" placeholder="any"></label>
+      {# Shopping to a number is how a buyer actually shops: "nothing over $7"
+         (JJ, 2026-09-09). Measured on the price they can see -- their own price
+         where they have one, the wholesale anchor otherwise. #}
+      <label class="f"><span>Under $</span>
+        <input class="narrow" name="max_price" type="number" min="0" step="0.01" value="{{ max_price }}" placeholder="any"></label>
     </div>
     <div class="stack">
       <label class="f"><span>Sort by</span>
@@ -35,8 +48,10 @@
           <option value="newest" {% if sort=='newest' %}selected{% endif %}>Newest on the sheet</option>
           <option value="value" {% if sort=='value' %}selected{% endif %}>Biggest lots first</option>
           <option value="qty" {% if sort=='qty' %}selected{% endif %}>Most available</option>
+          {% if not firm %}
           <option value="wholesale_asc" {% if sort=='wholesale_asc' %}selected{% endif %}>Wholesale: low to high</option>
           <option value="wholesale_desc" {% if sort=='wholesale_desc' %}selected{% endif %}>Wholesale: high to low</option>
+          {% endif %}
         </select></label>
       <label class="f"><span>Search</span>
         <input name="q" value="{{ q }}" placeholder="any words in SKU, description, brand"></label>
@@ -57,17 +72,23 @@
 <form method="post" action="{{ url_for('shop.offer_set') }}">
 <input type="hidden" name="next" value="{{ request.full_path }}">
 <div class="bar">
-  <a class="btn" href="{{ url_for('shop.offer') }}">Review offer (<span class="draft-count">{{ draft_count }}</span>)</a>
+  <a class="btn" href="{{ url_for('shop.offer') }}">Review {{ 'order request' if firm else 'offer' }} (<span class="draft-count">{{ draft_count }}</span>)</a>
   <button type="submit" class="sec">Save all</button>
   <span style="margin-left:auto"></span>
+  {% if not firm %}
   <label class="muted">Your target margin <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
   <label class="muted">Freight factor <input id="freightFactor" type="number" min="0" max="50" step="0.5" style="width:4.5rem;text-align:right" placeholder="%">%</label>
   <button type="button" id="fillFromMargin" class="sec" hidden>Fill this page</button>
-  <span class="muted" id="autosaveMsg" style="flex:1 1 100%">Lines save automatically as you type; they stay on your offer until you submit or clear it.
-    Set your margin and freight above and every line shows the price that would hit it, and what you would retail at the price you are offering.</span>
+  {% endif %}
+  <span class="muted" id="autosaveMsg" style="flex:1 1 100%">{% if firm %}Lines save automatically as you type; they stay on your order request until you send or clear it.{% else %}Lines save automatically as you type; they stay on your offer until you submit or clear it.
+    Set your margin and freight above and every line shows the price that would hit it, and what you would retail at the price you are offering.{% endif %}</span>
 </div>
 <table>
+  {% if firm %}
+  <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Your price</th><th class="right">MSRP</th><th class="right">Qty</th></tr></thead>
+  {% else %}
   <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">MSRP</th><th class="right">Qty</th><th class="right">Your offer / unit</th><th class="right">Your retail</th></tr></thead>
+  {% endif %}
   <tbody>
   {% for p in items %}
   <tr>
@@ -76,6 +97,11 @@
     <td class="muted pack">{{ pack(p) }}</td>
     <td class="right">{{ p.qty_available }}
       {% if p.cases_available and p.smallest_pack > 1 %}<br><span class="muted" style="font-size:.78rem">{{ p.cases_available }} × {{ p.smallest_pack }}</span>{% endif %}</td>
+    {% if firm %}
+    <td class="right price">${{ '%.2f'|format(p.your_price) }}<span class="saved" data-saved="{{ p.sku }}"></span></td>
+    <td class="right">${{ '%.2f'|format(p.msrp) }}</td>
+    <td class="right"><input class="qty" type="number" name="qty[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></td>
+    {% else %}
     {# data-suggest-max: the highest the sheet will suggest for this line (app.suggest_cap). #}
     <td class="right price" data-wholesale="{{ '%.2f'|format(p.wholesale) }}"
         {% set cap = suggest_cap(p) %}{% if cap %}data-suggest-max="{{ '%.2f'|format(cap) }}"{% endif %}>${{ '%.2f'|format(p.wholesale) }}</td>
@@ -85,12 +111,13 @@
       <input class="offer" type="number" name="price[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_price }}" min="0" step="0.01" placeholder="$"><span class="saved" data-saved="{{ p.sku }}"></span>
       <span class="suggest"></span></span></td>
     <td class="right retail"></td>
+    {% endif %}
   </tr>
   {% endfor %}
   </tbody>
 </table>
 <div class="bar">
-  <a class="btn" href="{{ url_for('shop.offer') }}">Review offer (<span class="draft-count">{{ draft_count }}</span>)</a>
+  <a class="btn" href="{{ url_for('shop.offer') }}">Review {{ 'order request' if firm else 'offer' }} (<span class="draft-count">{{ draft_count }}</span>)</a>
   <button type="submit" class="sec">Save all</button>
 </div>
 </form>
@@ -103,16 +130,18 @@
   const url = {{ url_for('shop.offer_line')|tojson }};
   function lineInputs(sku){ return {qty: document.querySelector('input.qty[data-sku="'+sku+'"]'), price: document.querySelector('input.offer[data-sku="'+sku+'"]')}; }
   async function save(sku){
+    // A firm-price row has no price box: the quantity is the whole line, and the
+    // server prices it from what we quoted.
     const el = lineInputs(sku), mark = document.querySelector('[data-saved="'+sku+'"]');
-    if(!el.qty || !el.price) return;
+    if(!el.qty) return;
     if(mark){ mark.textContent = '…'; mark.style.color = '#5b6472'; }
     try {
       const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin',
-                                  body: JSON.stringify({sku, qty: el.qty.value, price: el.price.value})});
+                                  body: JSON.stringify({sku, qty: el.qty.value, price: el.price ? el.price.value : ''})});
       const d = await r.json();
       if(!r.ok || d.error) throw new Error(d.error || r.status);
-      if(d.line){ el.qty.value = d.line.qty; el.price.value = d.line.price.toFixed(2); }
-      else if(el.qty.value !== '' && el.price.value !== '' && Number(el.qty.value) > 0) { el.qty.value = ''; }
+      if(d.line){ el.qty.value = d.line.qty; if(el.price) el.price.value = d.line.price.toFixed(2); }
+      else if(el.qty.value !== '' && Number(el.qty.value) > 0 && (!el.price || el.price.value !== '')) { el.qty.value = ''; }
       document.querySelectorAll('.draft-count').forEach(n => n.textContent = d.count);
       if(mark){ mark.textContent = d.line ? '✓' : ''; mark.style.color = '#0e8c8a'; setTimeout(()=>{ if(mark.textContent==='✓') mark.textContent=''; }, 2500); }
     } catch(e){
@@ -129,7 +158,7 @@
 
 })();
 </script>
-{% include "_buyer_math.html" %}
+{% if not firm %}{% include "_buyer_math.html" %}{% endif %}
 {% if pages > 1 %}
 <nav class="bar" style="justify-content:center">
   {% if page > 1 %}<a class="btn sec" href="{{ url_for('shop.home', page=page-1, **page_args) }}">&larr; Previous</a>{% endif %}
