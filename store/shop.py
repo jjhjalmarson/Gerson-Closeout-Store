@@ -28,7 +28,7 @@ from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, 
 from werkzeug.security import check_password_hash
 
 from . import mail
-from .db import ALL_COMPANIES
+from .db import ALL_COMPANIES, clean_list_id
 
 bp = Blueprint("shop", __name__)
 PAGE_SIZE = 60
@@ -57,7 +57,10 @@ def _resolve_buyer() -> dict[str, Any] | None:
         if b and b["status"] == "approved":
             return {"kind": "buyer", "key": f"buyer:{b['id']}", "token": "", "name": b["company"], "contact": b.get("contact") or "",
                     "email": b["email"], "companies": list(ALL_COMPANIES), "customer_id": None, "rep_name": "",
-                    "buyer_id": b["id"], "buyer_class": b.get("buyer_class") or "regional"}
+                    "buyer_id": b["id"], "buyer_class": b.get("buyer_class") or "regional",
+                    # Goodwill and the rest are buyers approved here, not AOI accounts
+                    # (JJ, 2026-09-02), so this is where their price list is assigned.
+                    **_priced_off(store, b.get("price_list_id"))}
         return None
     tok = session.get("invite")
     if tok:
@@ -66,7 +69,8 @@ def _resolve_buyer() -> dict[str, Any] | None:
             return {"kind": "invite", "key": f"inv:{tok}", "token": tok, "name": inv["label"] or "Guest",
                     "contact": inv.get("contact") or "", "email": inv.get("email") or "",
                     "companies": inv["companies"], "customer_id": None, "rep_name": "",
-                    "buyer_class": inv.get("buyer_class") or "regional"}
+                    "buyer_class": inv.get("buyer_class") or "regional",
+                    "price_mode": "offer", "price_list_id": ""}
         return None
     cid = session.get("customer_id")
     if cid:
@@ -75,8 +79,36 @@ def _resolve_buyer() -> dict[str, Any] | None:
             return {"kind": "customer", "key": f"cust:{cust['customer_id']}", "token": "", "name": cust["company_name"],
                     "contact": "", "email": "", "companies": cust["companies"], "customer_id": cust["customer_id"],
                     "rep_name": cust.get("rep_name") or "", "accounts": cust["accounts"],
-                    "buyer_class": cust.get("buyer_class") or "regional"}
+                    "buyer_class": cust.get("buyer_class") or "regional",
+                    # An allowlisted account can be put on a list too -- the field
+                    # rides the customers feed rather than being set here.
+                    **_priced_off(store, cust.get("price_list_id"))}
     return None
+
+
+def _priced_off(store, raw: Any) -> dict[str, str]:
+    """The buyer fields that decide which surface they get.  ``firm`` is a list
+    that is assigned **and** still published: a list AOI deactivated leaves the
+    buyer on the offer sheet rather than on stale prices, silently, because the
+    alternative is an empty sheet and a phone call."""
+    lid = clean_list_id(raw)
+    if lid and not store.price_list(lid):
+        lid = ""
+    return {"price_list_id": lid, "price_mode": "firm" if lid else "offer"}
+
+
+def _firm_prices(store, buyer: Mapping[str, Any] | None) -> dict[str, float] | None:
+    """``{sku: price}`` off this buyer's price list, or **None** when they are
+    not on one -- the flag the whole surface branches on.  Read once per
+    request."""
+    lid = (buyer or {}).get("price_list_id")
+    if not lid:
+        return None
+    cached = getattr(g, "firm_prices", None)
+    if cached is None:
+        cached = store.list_prices_for(lid)
+        g.firm_prices = cached
+    return cached
 
 
 def access_required(fn):
@@ -359,7 +391,11 @@ def home():
          # Depth, the way a buyer asks for it: at least this many pieces, or at
          # least this many of the smallest case they can take (JJ, 2026-09-03).
          "min_units": _num(a.get("min_units"), int) or None,
-         "min_cases": _num(a.get("min_cases"), int) or None}
+         "min_cases": _num(a.get("min_cases"), int) or None,
+         # "Under $__", on whichever price this buyer is reading: their own firm
+         # price where they have one, the wholesale anchor otherwise. Jennifer at
+         # Goodwill shops a number, not a category (JJ, 2026-09-09).
+         "max_price": round(_num(a.get("max_price")), 2) or None}
     sort = a.get("sort") or "default"
     if sort not in store.SORTS:
         sort = "default"
@@ -375,18 +411,26 @@ def home():
     featured_flag = a.get("featured") == "1"
     filtered = any(f.values()) or new_flag or featured_flag
     companies = g.buyer["companies"]
-    total = store.count_products(**f, companies=companies, new_since=new_since, featured_only=featured_flag)
-    new_total = store.count_products(companies=companies, new_since=cutoff)
-    featured_total = store.count_products(companies=companies, featured_only=True)
+    # A buyer on a price list sees the SKUs on it and nothing else: an item we
+    # have not quoted them is not on their sheet at all.
+    firm = _firm_prices(store, g.buyer)
+    lid = g.buyer["price_list_id"] if firm is not None else None
+    total = store.count_products(**f, companies=companies, new_since=new_since, featured_only=featured_flag,
+                                 price_list_id=lid)
+    new_total = store.count_products(companies=companies, new_since=cutoff, price_list_id=lid)
+    featured_total = store.count_products(companies=companies, featured_only=True, price_list_id=lid)
     pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
     page = min(page, pages)
     items = store.list_products(**f, sort=sort, companies=companies, new_since=new_since,
-                                featured_only=featured_flag, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
+                                featured_only=featured_flag, price_list_id=lid,
+                                limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
     draft = store.draft(g.buyer["key"])
     for p in items:
         d = draft.get(p["sku"]) or {}
         p["draft_qty"] = d.get("qty") or ""
         p["draft_price"] = ("%.2f" % d["price"]) if d.get("price") else ""
+        if firm is not None:
+            p["your_price"] = firm.get(p["sku"])
     args = {k: v for k, v in {**f, "sort": sort if sort != "default" else None,
                               "new": "1" if new_flag else None,
                               "featured": "1" if featured_flag else None}.items() if v}
@@ -396,9 +440,11 @@ def home():
        new=(True if new_flag else None), featured=(True if featured_flag else None),
        results=total, no_results=(total == 0 and bool(f["q"])) or None)
     return render_template("sheet.html", buyer=g.buyer, items=items,
-                           facets=store.facets(brand=f["brand"], category=f["category"], companies=companies),
+                           facets=store.facets(brand=f["brand"], category=f["category"], companies=companies,
+                                               price_list_id=lid),
                            brand=f["brand"], category=f["category"], subcategory=f["subcategory"], q=f["q"] or "",
                            min_units=f["min_units"] or "", min_cases=f["min_cases"] or "",
+                           max_price=("%.2f" % f["max_price"]).rstrip("0").rstrip(".") if f["max_price"] else "",
                            sort=sort, page=page, pages=pages, total=total, filtered=filtered, page_args=args,
                            new_flag=new_flag, new_total=new_total, new_cutoff=cutoff, new_days=NEW_DAYS,
                            featured_flag=featured_flag, featured_total=featured_total,
@@ -421,9 +467,13 @@ def item(sku: str):
     ev("item_viewed", sku=p["sku"], brand=p.get("brand"), category=p.get("category"),
        wholesale=p.get("wholesale"), qty_available=p.get("qty_available"),
        media=len(gallery) or None, videos=sum(1 for m in gallery if m["kind"] == "video") or None)
+    # None for an offer buyer; the quoted price -- or None, "price on request" --
+    # for a firm one.
+    firm = _firm_prices(store, g.buyer)
     return render_template("item.html", buyer=g.buyer, p=p, draft_qty=d.get("qty") or "",
                            draft_price=("%.2f" % d["price"]) if d.get("price") else "",
                            gallery=gallery,
+                           your_price=(firm.get(sku) if firm is not None else None),
                            new_cutoff=new_cutoff(), draft_count=_draft_count(store, g.buyer))
 
 
@@ -459,15 +509,20 @@ def _num(raw: Any, cast=float):
         return cast(0)
 
 
-def _apply_line(draft: dict, sku: str, product: dict | None, qty_raw: Any, price_raw: Any, allowed: set) -> dict | None:
+def _apply_line(draft: dict, sku: str, product: dict | None, qty_raw: Any, price_raw: Any, allowed: set,
+                firm: dict[str, float] | None = None) -> dict | None:
     """Put one typed pair on the draft (snapped to whole packs, capped at what is
     available) or take the line off when either half is blank / zero / not for
-    this buyer. Returns the saved line or None."""
+    this buyer. Returns the saved line or None.
+
+    ``firm`` is the buyer's quoted prices where they have them: the price then
+    comes from the server and whatever was posted is ignored, so a firm line is
+    the number we quoted or it is not a line at all."""
     if not product or (product["company"] and product["company"] not in allowed):
         draft.pop(sku, None)
         return None
     qty = _snap_qty(_num(qty_raw, int), product["case_pack"], product["qty_available"])
-    price = round(_num(price_raw), 2)
+    price = round(float(firm.get(sku) or 0.0), 2) if firm is not None else round(_num(price_raw), 2)
     was = draft.get(sku)
     if qty > 0 and price > 0:
         draft[sku] = {"qty": qty, "price": price}
@@ -498,7 +553,7 @@ def offer_line():
     store = _ctx().store
     draft = store.draft(g.buyer["key"])
     line = _apply_line(draft, sku, store.products_by_skus([sku]).get(sku), body.get("qty"), body.get("price"),
-                       set(g.buyer["companies"]))
+                       set(g.buyer["companies"]), _firm_prices(store, g.buyer))
     store.set_draft(g.buyer["key"], draft)
     return {"saved": True, "sku": sku, "line": line, "count": len(draft)}
 
@@ -517,10 +572,13 @@ def offer_set():
             skus.add(m.group(1))
     by = store.products_by_skus(skus)
     allowed = set(g.buyer["companies"])
+    firm = _firm_prices(store, g.buyer)
     for sku in skus:
-        _apply_line(draft, sku, by.get(sku), request.form.get(f"qty[{sku}]"), request.form.get(f"price[{sku}]"), allowed)
+        _apply_line(draft, sku, by.get(sku), request.form.get(f"qty[{sku}]"), request.form.get(f"price[{sku}]"),
+                    allowed, firm)
     store.set_draft(g.buyer["key"], draft)
-    flash(f"{len(draft)} line{'s' if len(draft) != 1 else ''} on your offer.")
+    flash(f"{len(draft)} line{'s' if len(draft) != 1 else ''} on your "
+          f"{'order request' if firm is not None else 'offer'}.")
     nxt = request.form.get("next") or ""
     if nxt.startswith("/") and not nxt.startswith("//"):
         return redirect(nxt)
@@ -539,13 +597,17 @@ def _offer_lines(store, buyer) -> tuple[list[dict[str, Any]], float]:
     draft = store.draft(buyer["key"])
     by = store.products_by_skus(draft.keys())
     allowed = set(buyer["companies"])
+    # Firm lines are priced here, at review and again at submit, from the current
+    # feed: a price that moved after the line was saved moves the line with it,
+    # and a SKU we no longer quote them drops off.
+    firm = _firm_prices(store, buyer)
     lines, total = [], 0.0
     for sku in sorted(draft):
         p = by.get(sku)
         if not p or (p["company"] and p["company"] not in allowed):
             continue
         q = _snap_qty(draft[sku]["qty"], p["case_pack"], p["qty_available"])
-        price = round(float(draft[sku]["price"]), 2)
+        price = round(float((firm.get(sku) if firm is not None else draft[sku]["price"]) or 0.0), 2)
         if q <= 0 or price <= 0:
             continue
         ext = round(q * price, 2)
@@ -559,9 +621,15 @@ def _offer_lines(store, buyer) -> tuple[list[dict[str, Any]], float]:
     return lines, round(total, 2)
 
 
-def _csv(lines: list[dict[str, Any]]) -> str:
+def _csv(lines: list[dict[str, Any]], *, firm: bool = False) -> str:
     buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=list(CSV_COLUMNS), extrasaction="ignore")
+    # A firm buyer's download is the quote they were given: the wholesale column
+    # they never saw on the sheet has no business appearing in it.
+    cols = list(CSV_COLUMNS)
+    if firm:
+        cols = ["price" if c == "offer_price" else c for c in cols if c != "wholesale"]
+        lines = [{**l, "price": l["offer_price"]} for l in lines]
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
     w.writeheader()
     for l in lines:
         w.writerow(l)
@@ -586,25 +654,44 @@ def offer():
 @bp.get("/offer.csv")
 @access_required
 def offer_csv():
-    lines, _total = _offer_lines(_ctx().store, g.buyer)
+    store = _ctx().store
+    lines, _total = _offer_lines(store, g.buyer)
+    firm = _firm_prices(store, g.buyer) is not None
     ev("offer_downloaded", lines=len(lines))
-    return Response(_csv(lines), mimetype="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=gerson-closeout-offer.csv"})
+    name = "gerson-closeout-order-request.csv" if firm else "gerson-closeout-offer.csv"
+    return Response(_csv(lines, firm=firm), mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={name}"})
 
 
 def _offer_text(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -> str:
     """The plain-text part. The buyer's copy is addressed to the buyer: the
-    team's instructions do not belong in their inbox."""
-    rows = [f"{'SKU':<16}{'Qty':>7}{'Whsl':>10}{'Offer':>10}{'% whsl':>8}{'Ext':>12}  Description"]
-    for l in payload["lines"]:
-        pct = f"{l['pct_of_wholesale'] * 100:.0f}%" if l.get("pct_of_wholesale") else ""
-        rows.append(f"{l['sku']:<16}{l['qty']:>7}{l['wholesale']:>10.2f}{l['offer_price']:>10.2f}{pct:>8}"
-                    f"{l['extended']:>12,.2f}  {l['description'][:48]}")
+    team's instructions do not belong in their inbox.
+
+    A firm-price buyer sent an order request at prices we quoted, so their copy
+    says so, and it carries neither the wholesale column nor the % of it -- the
+    numbers their sheet deliberately never showed."""
+    quiet = for_buyer and payload.get("price_mode") == "firm"
+    if quiet:
+        rows = [f"{'SKU':<16}{'Qty':>7}{'Price':>10}{'Ext':>12}  Description"]
+        for l in payload["lines"]:
+            rows.append(f"{l['sku']:<16}{l['qty']:>7}{l['offer_price']:>10.2f}"
+                        f"{l['extended']:>12,.2f}  {l['description'][:48]}")
+    else:
+        rows = [f"{'SKU':<16}{'Qty':>7}{'Whsl':>10}{'Offer':>10}{'% whsl':>8}{'Ext':>12}  Description"]
+        for l in payload["lines"]:
+            pct = f"{l['pct_of_wholesale'] * 100:.0f}%" if l.get("pct_of_wholesale") else ""
+            rows.append(f"{l['sku']:<16}{l['qty']:>7}{l['wholesale']:>10.2f}{l['offer_price']:>10.2f}{pct:>8}"
+                        f"{l['extended']:>12,.2f}  {l['description'][:48]}")
     who = payload["company"] + (f" / {payload['contact']}" if payload.get("contact") else "")
-    totals = f"Lines: {payload['line_count']}   Units: {payload['units']:,}   Offer total: ${payload['total']:,.2f}"
-    if payload.get("pct_of_wholesale"):
+    label = "Order total" if quiet else "Offer total"
+    totals = f"Lines: {payload['line_count']}   Units: {payload['units']:,}   {label}: ${payload['total']:,.2f}"
+    if payload.get("pct_of_wholesale") and not quiet:
         totals += f"   ({payload['pct_of_wholesale'] * 100:.0f}% of ${payload['wholesale_total']:,.2f} wholesale)"
-    if for_buyer:
+    if for_buyer and quiet:
+        head = [f"Your order request OF-{ref}", totals]
+        tail = ("\n\nYour lines are attached as a CSV. These are the prices we quoted you: the Gerson closeout "
+                "team will confirm them and ship at once.\n")
+    elif for_buyer:
         head = [f"Your closeout offer OF-{ref}", totals]
         tail = ("\n\nYour lines are attached as a CSV. The Gerson closeout team will reply to this address "
                 "with an acceptance or a counter.\n")
@@ -630,21 +717,26 @@ _TD = "text-align:right;padding:8px 10px;border-bottom:1px solid #eef1f4;white-s
 
 
 def _offer_html(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -> str:
-    """The same offer as a table that lines up in a proportional font."""
+    """The same offer as a table that lines up in a proportional font.  A firm
+    buyer's own copy drops the wholesale and % columns their sheet never had."""
     import html as _h
     e = lambda v: _h.escape(str(v or ""))                                   # noqa: E731
+    quiet = for_buyer and payload.get("price_mode") == "firm"
     rows = []
     for l in payload["lines"]:
         pct = f"{l['pct_of_wholesale'] * 100:.0f}%" if l.get("pct_of_wholesale") else ""
+        middle = (f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b></td>" if quiet else
+                  f"<td style=\"{_TD}\">${l['wholesale']:,.2f}</td>"
+                  f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b></td>"
+                  f"<td style=\"{_TD};color:#5b6472\">{pct}</td>")
         rows.append(
             f"<tr><td style=\"{_TD};text-align:left\"><b>{e(l['sku'])}</b>"
             f"<div style=\"color:#5b6472;font-size:12px\">{e(l['description'])}</div></td>"
             f"<td style=\"{_TD}\">{l['qty']:,}</td>"
-            f"<td style=\"{_TD}\">${l['wholesale']:,.2f}</td>"
-            f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b></td>"
-            f"<td style=\"{_TD};color:#5b6472\">{pct}</td>"
-            f"<td style=\"{_TD}\">${l['extended']:,.2f}</td></tr>")
-    heads = ("Item", "Qty", "Wholesale", "Offer / unit", "% whsl", "Extended")
+            + middle
+            + f"<td style=\"{_TD}\">${l['extended']:,.2f}</td></tr>")
+    heads = (("Item", "Qty", "Your price", "Extended") if quiet else
+             ("Item", "Qty", "Wholesale", "Offer / unit", "% whsl", "Extended"))
     table = ("<table cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;width:100%;max-width:720px\"><tr>"
              + "".join(f"<th style=\"{_TH}" + (";text-align:left" if i == 0 else "") + f"\">{h}</th>"
                        for i, h in enumerate(heads))
@@ -653,13 +745,19 @@ def _offer_html(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -
                f"<span style=\"color:#5b6472\"> · {payload['line_count']} line"
                f"{'' if payload['line_count'] == 1 else 's'}</span></td>"
                f"<td style=\"{_TD};border-bottom:0;padding-top:10px\"><b>{payload['units']:,}</b></td>"
-               f"<td colspan=\"3\" style=\"{_TD};border-bottom:0;padding-top:10px;color:#5b6472\">"
-             + (f"{payload['pct_of_wholesale'] * 100:.0f}% of ${payload['wholesale_total']:,.2f} wholesale"
-                if payload.get("pct_of_wholesale") else "")
+               f"<td colspan=\"{1 if quiet else 3}\" style=\"{_TD};border-bottom:0;padding-top:10px;color:#5b6472\">"
+             + ("" if quiet else
+                (f"{payload['pct_of_wholesale'] * 100:.0f}% of ${payload['wholesale_total']:,.2f} wholesale"
+                 if payload.get("pct_of_wholesale") else ""))
              + f"</td><td style=\"{_TD};border-bottom:0;padding-top:10px\"><b>${payload['total']:,.2f}</b></td></tr>"
              + "</table>")
 
-    if for_buyer:
+    if quiet:
+        lede = (f"<p style=\"margin:0 0 4px\">Thank you — your order request <b>OF-{ref}</b> is with the Gerson "
+                f"closeout team.</p><p style=\"margin:0 0 18px;color:#5b6472\">These are the prices we quoted you: "
+                f"we will confirm them and ship at once. Your lines are attached as a CSV.</p>")
+        who = ""
+    elif for_buyer:
         lede = (f"<p style=\"margin:0 0 4px\">Thank you — your offer <b>OF-{ref}</b> is with the Gerson closeout "
                 f"team.</p><p style=\"margin:0 0 18px;color:#5b6472\">We will reply to this address with an "
                 f"acceptance or a counter. Your lines are attached as a CSV.</p>")
@@ -684,7 +782,8 @@ def _offer_html(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -
             "AOI sends the priced view — cost, margin and floors — separately, with a link to answer it there.</p>")
     return (f"<div style=\"{_MAIL_CSS}\">"
             f"<p style=\"margin:0 0 14px;font:600 12px 'Segoe UI',Arial,sans-serif;letter-spacing:.06em;"
-            f"text-transform:uppercase;color:#0e8c8a\">Gerson closeout offer OF-{ref}</p>"
+            f"text-transform:uppercase;color:#0e8c8a\">Gerson closeout "
+            f"{'order request' if quiet else 'offer'} OF-{ref}</p>"
             f"{lede}{table}{who}{foot}</div>")
 
 
@@ -694,12 +793,14 @@ def offer_submit():
     ctx = _ctx()
     store = ctx.store
     lines, total = _offer_lines(store, g.buyer)
+    firm = _firm_prices(store, g.buyer) is not None
     f = request.form
     form = {"company": (f.get("company") or "").strip()[:200], "contact": (f.get("contact") or "").strip()[:200],
             "email": (f.get("email") or "").strip().lower()[:200], "phone": (f.get("phone") or "").strip()[:60],
             "notes": (f.get("notes") or "").strip()[:2000]}
     if not lines:
-        flash("Add at least one line with a quantity and an offered price first.")
+        flash("Add at least one line with a quantity first." if firm else
+              "Add at least one line with a quantity and an offered price first.")
         return redirect(url_for("shop.home"))
     if not form["company"] or not _EMAIL.match(form["email"]):
         flash("Your company name and a valid email are required so we can reply.")
@@ -717,21 +818,30 @@ def offer_submit():
         "lines": lines, "line_count": len(lines), "units": int(sum(l["qty"] for l in lines)),
         "total": total, "wholesale_total": whsl_total,
         "pct_of_wholesale": round(total / whsl_total, 4) if whsl_total > 0 else None,
+        # Always present, so AOI's desk can tell an offer to negotiate from an
+        # order at prices we already quoted (2026-09-09), and which list quoted
+        # them when it was the latter.
+        "price_mode": "firm" if firm else "offer",
+        **({"price_list_id": g.buyer["price_list_id"]} if firm else {}),
     }
     ref = store.enqueue("offer", payload, customer_id=g.buyer.get("customer_id"), buyer_key=g.buyer["key"])
     attachment = (f"offer-OF-{ref}.csv", _csv(lines).encode("utf-8"), "text/csv")
-    subject = (f"Closeout offer OF-{ref}: {form['company']} — {len(lines)} line{'s' if len(lines) != 1 else ''}, "
+    buyer_attachment = ((f"order-request-OF-{ref}.csv", _csv(lines, firm=True).encode("utf-8"), "text/csv")
+                        if firm else attachment)
+    kind = "order request" if firm else "offer"
+    subject = (f"Closeout {kind} OF-{ref}: {form['company']} — {len(lines)} line{'s' if len(lines) != 1 else ''}, "
                f"${total:,.2f}")
     notified = [to for to in ctx.cfg.offer_notify_list
                 if mail.send(ctx.cfg, to=to, subject=subject, body=_offer_text(payload, ref),
                              html=_offer_html(payload, ref), attachments=[attachment])]
     if not ctx.cfg.offer_notify_list:
         current_app.logger.error("OFFER_NOTIFY_EMAILS is not set: offer OF-%s only reached the outbox", ref)
-    mail.send(ctx.cfg, to=form["email"], subject=f"We have your offer (OF-{ref})",
+    mail.send(ctx.cfg, to=form["email"], subject=f"We have your {kind} (OF-{ref})",
               body=_offer_text(payload, ref, for_buyer=True), html=_offer_html(payload, ref, for_buyer=True),
-              attachments=[attachment])
+              attachments=[buyer_attachment])
     ev("offer_submitted", ref=f"OF-{ref}", lines=len(lines), units=payload["units"], total=total,
-       wholesale_total=whsl_total, pct_of_wholesale=payload["pct_of_wholesale"])
+       wholesale_total=whsl_total, pct_of_wholesale=payload["pct_of_wholesale"], price_mode=payload["price_mode"],
+       price_list_id=payload.get("price_list_id"))
     store.set_draft(g.buyer["key"], {})
     return render_template("offer_sent.html", buyer=g.buyer, ref=ref, payload=payload, draft_count=0, notified=bool(notified))
 

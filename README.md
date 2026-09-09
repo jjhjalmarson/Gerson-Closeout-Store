@@ -19,11 +19,43 @@ the same key. See `docs/closeout-platform-brief.md` §0 / §11 in the AOI repo.
 |---|---|---|
 | `catalog` | SKU, description, image, brand, category, case / master / inner pack, wholesale, approximate quantity, company, `listed_since` (first run on the sheet; null = before AOI kept track), `price_changed_at`, `price_was` | cost, receipt date, age, bucket, advance rate, floors, tier, state |
 | `invites` | invite token, label (who it went to), contact, email, companies, expiry | anything else |
-| `customers` | allowlisted NetSuite accounts (id, company, login emails, rep) — may also sign in by magic link | AR, order history, credit |
+| `customers` | allowlisted NetSuite accounts (id, company, login emails, rep, `price_list_id`) — may also sign in by magic link | AR, order history, credit |
 | `curation` | per-customer SKU lists (kept for AOI compatibility; not shown on the sheet) | the history behind the ranking |
+| `prices` | the price lists and what is on them: `[{list_id, label, prices: {sku: number}}]` | how a price was arrived at — basis, markup, cost |
 
 The catalog feed still carries the ladder price for AOI's own use; **the sheet
 never shows it** — buyers see original wholesale and type what they will pay.
+
+## Two kinds of account (JJ / Goodwill, 2026-09-09)
+
+AOI owns cost, so **AOI publishes the price lists** — `cost_plus_5` / "Landed
+cost + 5%", and whatever else the desk wants — with a price per SKU on each and
+nothing about how it was reached. The store owns who may buy, so **the store
+assigns a list to a buyer**, on `/admin` beside their class. Which one they are
+on decides the surface they get:
+
+* **Offer sheet** (no list — the default, and everyone on an invite link) — the
+  sheet above: original wholesale, a blank offer box, the buyer's own margin
+  tools and the capped suggestion.
+* **A price list** — **"Your price"**, the number on their list, instead of
+  wholesale. No offer box, no suggestion, no % of wholesale; a SKU their list
+  does not price is off their sheet entirely and reads "price on request" on
+  its item page. Quantities work as before, the line price is set
+  **server-side** from the list (whatever the client posts is ignored), and
+  submitting rides the same pipeline with `price_mode: "firm"` and the
+  `price_list_id` in the offer payload, so AOI's desk knows it is an order at
+  prices we already quoted. A list AOI stops publishing leaves the buyers on it
+  back on the offer sheet.
+
+The list's `label` is admin-facing only: it names the list in the `/admin`
+dropdown and never reaches a buyer, who only ever sees "Your price".
+
+`prices` is a full snapshot like the other feeds; an **empty** `items` list is
+legal and means there are no lists at all (unlike `customers` / `invites`,
+where an empty feed is refused because it would wipe the allowlist).
+
+Both kinds of sheet carry an **"Under $__"** filter, measured on whichever
+price that buyer can see.
 
 ## What brings a buyer back
 

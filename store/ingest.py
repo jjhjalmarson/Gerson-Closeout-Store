@@ -14,13 +14,17 @@ from flask import Blueprint, current_app, jsonify, request
 
 bp = Blueprint("ingest", __name__)
 
-KINDS = ("catalog", "customers", "curation", "invites")
+KINDS = ("catalog", "customers", "curation", "invites", "prices")
 FORBIDDEN_KEYS = frozenset({
     "avg_cost", "ats_cost", "econ_cost", "cost", "unit_cost", "haircut", "receipt_date", "date_source", "days",
     "age_months", "bucket", "aging_bucket", "adv_rate", "advance_rate", "capacity_now", "capacity_at_risk",
     "cliff_date", "cliff_remeasure", "floor_independent", "floor_regional", "floor_liquidator", "floor", "floors",
     "carry_per_month", "accrued_holding", "recovery_pct", "exp_recovery", "krebs_tranche", "tier", "state",
     "rationale", "confidence", "score", "on_hand", "ats_units",
+    # How a price on a list was arrived at is AOI's business (2026-09-09): the
+    # store takes the number and nothing behind it. ``list_id``, ``label``,
+    # ``prices`` and ``price`` are the fields it is allowed to see.
+    "firm_basis", "firm_markup_pct", "markup", "markup_pct", "price_basis",
 })
 
 
@@ -66,8 +70,10 @@ def ingest(kind: str):
         current_app.logger.error("ingest %s REFUSED: empty feed would wipe the allowlist", kind)
         return jsonify({"error": f"empty {kind} feed refused: it would deactivate every account"}), 409
     store = current_app.config["STORE"].store
+    # ``prices`` is not in the empty-feed guard above, and deliberately: an empty
+    # snapshot is the legitimate way to say "there are no price lists".
     fn = {"catalog": store.ingest_catalog, "customers": store.ingest_customers, "curation": store.ingest_curation,
-          "invites": store.ingest_invites}[kind]
+          "invites": store.ingest_invites, "prices": store.ingest_prices}[kind]
     n = fn(body["items"], as_of=body.get("as_of"), generated_at=body.get("generated_at"))
     if kind == "catalog" and not current_app.config.get("TESTING"):
         from . import images

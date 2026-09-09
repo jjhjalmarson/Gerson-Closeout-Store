@@ -1,14 +1,35 @@
 {% extends "base.html" %}
 {% from "_macros.html" import pack %}
-{% block title %}Review offer · Gerson Closeout Offers{% endblock %}
+{# A firm-price account is not making an offer: these are our prices, and this
+   page is the order they are asking us to fill (JJ, 2026-09-09). #}
+{% set firm = buyer.price_mode == 'firm' %}
+{% block title %}{{ 'Review order request' if firm else 'Review offer' }} · Gerson Closeout Offers{% endblock %}
 {% block body %}
-<h1>Your offer</h1>
+<h1>{{ 'Your order request' if firm else 'Your offer' }}</h1>
 {% if not lines %}
-<p class="muted">Nothing on it yet. <a href="{{ url_for('shop.home') }}">Back to the sheet</a> and enter a quantity and an offered price on the items you want.</p>
+<p class="muted">Nothing on it yet. <a href="{{ url_for('shop.home') }}">Back to the sheet</a> and enter {% if firm %}a quantity on the items you want{% else %}a quantity and an offered price on the items you want{% endif %}.</p>
 {% else %}
 <form method="post" action="{{ url_for('shop.offer_set') }}">
 <input type="hidden" name="next" value="{{ url_for('shop.offer') }}">
 <table>
+  {% if firm %}
+  <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Your price</th><th class="right">MSRP</th><th class="right">Qty</th><th class="right">Extended</th></tr></thead>
+  {% for l in lines %}
+  <tr>
+    <td><b>{{ l.description }}</b><br><span class="muted">{{ l.sku }} · {{ l.brand }}{% if l.category %} · {{ l.category }}{% endif %}</span></td>
+    <td class="muted">{{ pack(l) }}</td>
+    <td class="right">{{ l.qty_available }}</td>
+    <td class="right price">${{ '%.2f'|format(l.offer_price) }}</td>
+    {% set msrp = l.wholesale|msrp %}
+    <td class="right">{% if msrp %}${{ '%.2f'|format(msrp) }}{% endif %}</td>
+    <td class="right"><input class="qty" type="number" name="qty[{{ l.sku }}]" value="{{ l.qty }}" min="0" step="{{ l.case_pack }}"></td>
+    <td class="right">${{ '%.2f'|format(l.extended) }}</td>
+  </tr>
+  {% endfor %}
+  <tr><td colspan="5" class="right"><b>Total</b> <span class="muted">· {{ lines|length }} line{{ 's' if lines|length != 1 }}</span></td>
+      <td class="right"><b>{{ lines|sum(attribute='qty') }}</b></td>
+      <td class="right"><b>${{ '%.2f'|format(total) }}</b></td></tr>
+  {% else %}
   <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">MSRP</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Your retail</th><th class="right">Extended</th></tr></thead>
   {% for l in lines %}
   <tr>
@@ -30,22 +51,29 @@
       <td class="right muted">{% if wholesale_total > 0 %}{{ ((total / wholesale_total) * 100)|round|int }}% of ${{ '%.2f'|format(wholesale_total) }}{% endif %}</td>
       <td class="right retail-total"></td>
       <td class="right"><b>${{ '%.2f'|format(total) }}</b></td></tr>
+  {% endif %}
 </table>
+{% if not firm %}
 <div class="bar">
   <label class="muted">Your target margin <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
   <label class="muted">Freight factor <input id="freightFactor" type="number" min="0" max="50" step="0.5" style="width:4.5rem;text-align:right" placeholder="%">%</label>
   <span class="muted">Your retail is your offer, carried in at your freight factor and marked up to your margin.
     Both numbers stay in your browser — we never see them.</span>
 </div>
+{% endif %}
 <div class="bar">
   <button type="submit" class="sec">Update lines</button>
   <a class="btn sec" href="{{ url_for('shop.offer_csv') }}">Download CSV</a>
   <span class="muted">Set a quantity to 0 to remove a line. Quantities snap to whole packs.</span>
 </div>
 </form>
-<form method="post" action="{{ url_for('shop.offer_clear') }}" class="bar" style="background:none;padding:0"><button type="submit" class="sec" onclick="return confirm('Clear every line from this offer?')">Clear the offer</button></form>
-<h2>Submit</h2>
+<form method="post" action="{{ url_for('shop.offer_clear') }}" class="bar" style="background:none;padding:0"><button type="submit" class="sec" onclick="return confirm('Clear every line from this {{ 'order request' if firm else 'offer' }}?')">Clear the {{ 'order request' if firm else 'offer' }}</button></form>
+<h2>{{ 'Send it' if firm else 'Submit' }}</h2>
+{% if firm %}
+<p class="muted">These are the prices we quoted you: we confirm them and ship at once. The same order minimum applies as on any closeout order.</p>
+{% else %}
 <p class="muted">We reply to the email below with an acceptance or a counter. Nothing ships and nothing is charged until both sides agree.</p>
+{% endif %}
 <form method="post" action="{{ url_for('shop.offer_submit') }}">
   <div class="grid" style="grid-template-columns:1fr 1fr">
     <label>Company *<br><input name="company" required value="{{ form.company or '' }}" style="width:100%"></label>
@@ -54,8 +82,8 @@
     <label>Phone<br><input name="phone" value="{{ form.phone or '' }}" style="width:100%"></label>
   </div>
   <label style="display:block;margin-top:.6rem">Notes <span class="muted">(ship-to region, timing, take-all conditions, labeling)</span><br><textarea name="notes" rows="3" maxlength="2000" style="width:100%">{{ form.notes or '' }}</textarea></label>
-  <div class="bar"><button type="submit">Submit offer</button> <span class="muted">You get a copy by email; the lines go to the Gerson closeout team.</span></div>
+  <div class="bar"><button type="submit">{{ 'Send order request' if firm else 'Submit offer' }}</button> <span class="muted">You get a copy by email; the lines go to the Gerson closeout team.</span></div>
 </form>
 {% endif %}
-{% include "_buyer_math.html" %}
+{% if not firm %}{% include "_buyer_math.html" %}{% endif %}
 {% endblock %}

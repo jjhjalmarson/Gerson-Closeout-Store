@@ -37,9 +37,28 @@
     {% if p.featured_rank or (p.listed_since and p.listed_since >= new_cutoff) %}<span class="badges">{% if p.featured_rank %}<span class="badge-featured" title="one of the items we are leading with">Featured</span>{% endif %}{% if p.listed_since and p.listed_since >= new_cutoff %}<span class="badge-new">New</span>{% endif %}</span>{% endif %}
     <h1>{{ p.description }}</h1>
     <div class="muted">{{ p.sku }} · {{ p.brand }}{% if p.category %} · {{ p.category }}{% endif %}{% if p.subcategory %} · {{ p.subcategory }}{% endif %}{% if p.upc %} · UPC {{ p.upc }}{% endif %}</div>
+    {# A firm-price account sees the price we will take and nothing to bid with;
+       an item we have not quoted them is priced on request (2026-09-09). #}
+    {% set firm = buyer.price_mode == 'firm' %}
+    {% if firm %}
+    <p>{% if your_price %}<span class="price" style="font-size:1.4rem">${{ '%.2f'|format(your_price) }}</span> <span class="muted">your price</span>
+      {% else %}<span class="price" style="font-size:1.4rem">Price on request</span> <span class="muted">— ask your Gerson contact for a quote on this item</span>{% endif %}
+      {% if p.msrp %}<br><span class="price">${{ '%.2f'|format(p.msrp) }}</span> <span class="muted">MSRP</span>{% endif %}</p>
+    {% else %}
     <p><span class="price" style="font-size:1.4rem">${{ '%.2f'|format(p.wholesale) }}</span> <span class="muted">original wholesale</span>
       {% if p.msrp %}<br><span class="price">${{ '%.2f'|format(p.msrp) }}</span> <span class="muted">MSRP</span>{% endif %}</p>
+    {% endif %}
     <p class="muted">{{ pack(p) }} · {{ p.qty_available }} available</p>
+    {% if firm %}
+      {% if your_price %}
+      <form method="post" action="{{ url_for('shop.offer_set') }}" class="bar">
+        <input type="hidden" name="next" value="{{ url_for('shop.item', sku=p.sku) }}">
+        <label>Quantity <input class="qty" type="number" name="qty[{{ p.sku }}]" value="{{ draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></label>
+        <button type="submit">Add to order request</button>
+        {% if draft_qty %}<span class="muted">On your order request: {{ draft_qty }} at ${{ draft_price }}</span>{% endif %}
+      </form>
+      {% endif %}
+    {% else %}
     <form method="post" action="{{ url_for('shop.offer_set') }}" class="bar">
       <input type="hidden" name="next" value="{{ url_for('shop.item', sku=p.sku) }}">
       <label>Quantity <input class="qty" type="number" name="qty[{{ p.sku }}]" value="{{ draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></label>
@@ -47,6 +66,7 @@
       <button type="submit">Save to offer</button>
       {% if draft_qty %}<span class="muted">On your offer: {{ draft_qty }} at ${{ draft_price }}</span>{% endif %}
     </form>
+    {% endif %}
   </div>
 </div>
 {% if gallery and gallery|length > 1 %}
