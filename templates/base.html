@@ -41,8 +41,26 @@
   .badge-featured { display:inline-block; background:var(--teal); color:#fff; font-size:.66rem; font-weight:700; letter-spacing:.06em;
                     text-transform:uppercase; border-radius:4px; padding:.08rem .38rem; vertical-align:middle; margin-right:.3rem; }
   .badges { display:block; margin-bottom:.15rem; line-height:1; }
+  .badge-video { display:inline-block; background:var(--ink); color:#fff; font-size:.66rem; font-weight:700; letter-spacing:.06em;
+                 text-transform:uppercase; border-radius:4px; padding:.08rem .38rem; vertical-align:middle; margin-right:.3rem; }
   .newline.featured a { color:var(--teal); }
   .newline { margin:-.2rem 0 .8rem; font-size:.95rem; } .newline a { color:var(--accent); text-decoration:none; } .newline a:hover { text-decoration:underline; }
+  /* Item gallery: one stage, a strip of thumbnails under it. The stage keeps
+     its box whichever way the picture is shaped, so choosing a thumbnail does
+     not shunt the page around. */
+  .gallery .stage { width:100%; aspect-ratio:1/1; background:var(--panel); border-radius:8px;
+                    display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .gallery .stage img, .gallery .stage video { max-width:100%; max-height:100%; display:block; }
+  /* `display:block` above out-specifies the browser's own [hidden]{display:none},
+     so without this the video plays host to the stage on page load. */
+  .gallery .stage [hidden] { display:none; }
+  .gallery .thumbs { display:flex; flex-wrap:wrap; gap:.4rem; margin:.5rem 0 .2rem; }
+  .gallery .thumb { padding:0; border:1px solid var(--line); border-radius:6px; background:var(--panel);
+                    width:56px; height:56px; overflow:hidden; cursor:pointer; position:relative; }
+  .gallery .thumb.on { border-color:var(--teal); box-shadow:0 0 0 1px var(--teal); }
+  .gallery .thumb img { width:100%; height:100%; object-fit:contain; display:block; }
+  .gallery .thumb .play { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+                          color:var(--ink); font-size:1.1rem; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:1rem; }
   /* Filters: every control the same height, its label above it, so the row
      reads as one panel instead of a line of mismatched boxes. */

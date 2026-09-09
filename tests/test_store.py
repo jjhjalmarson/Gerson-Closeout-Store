@@ -1006,3 +1006,117 @@ class SuggestCapTest(StoreTestCase):
         self.assertIsNone(cap({"wholesale": 0.0, "closeout_price": 30.0}))          # no anchor
         off = create_app(_cfg(suggest_max_disc=1.0)).jinja_env.globals["suggest_cap"]
         self.assertEqual(off({"wholesale": 100.0, "closeout_price": 30.0}), 30.0)   # suppressed in JS
+
+
+class GalleryTest(StoreTestCase):
+    """Additional images and video, on the item page (JJ, 2026-09-09).
+
+    The sheet still shows one thumbnail; clicking in shows everything AOI has."""
+
+    MEDIA = [{"url": "https://images.salsify.com/image/upload/s--a--/hero.jpg", "kind": "image"},
+             {"url": "https://images.salsify.com/image/upload/s--b--/detail.jpg", "kind": "image"},
+             {"url": "https://images.salsify.com/image/upload/s--c--/glam.jpg", "kind": "image"},
+             {"url": "https://images.salsify.com/video/upload/s--d--/demo.mp4", "kind": "video"}]
+
+    def _feed(self, media, sku="L1"):
+        items = [({**it, "media": media} if it["sku"] == sku else it) for it in CATALOG["items"]]
+        return {**CATALOG, "items": items}
+
+    def setUp(self):
+        super().setUp()
+        self.seed()
+        self.use_invite("ross-xyz")
+
+    def test_the_gallery_arrives_in_order_and_is_read_back_in_order(self):
+        self.ingest("catalog", self._feed(self.MEDIA))
+        got = self.store.media_for("L1")
+        self.assertEqual([m["idx"] for m in got], [0, 1, 2, 3])
+        self.assertEqual([m["kind"] for m in got], ["image", "image", "image", "video"])
+        self.assertEqual(self.store.media_counts(), {"image": 3, "video": 1})
+
+    def test_the_item_page_shows_thumbnails_a_video_and_a_count(self):
+        self.ingest("catalog", self._feed(self.MEDIA))
+        html = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertIn('class="thumbs"', html)
+        self.assertIn("3 photos", html)
+        self.assertIn("<b>1 video</b>", html)
+        self.assertIn("demo.mp4", html)                       # the video is linked
+        self.assertIn('id="stageVid"', html)
+        # The hero keeps coming off our own cache, never off the source url.
+        self.assertIn('data-src="/img/L1"', html)
+        self.assertNotIn("hero.jpg", html)
+        # ...and the extras are linked straight from Salsify's CDN.
+        self.assertIn("detail.jpg", html)
+
+    def test_the_sheet_says_there_is_a_video_without_carrying_one(self):
+        """A video is the best thing on the page, so the sheet points at it —
+        but the gallery itself stays on the item page (JJ, 2026-09-09)."""
+        self.ingest("catalog", self._feed(self.MEDIA))
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('class="badge-video"', html)              # L1 has one
+        self.assertNotIn('class="thumbs"', html)                # ...but no gallery here
+        self.assertNotIn("detail.jpg", html)
+        self.assertNotIn("demo.mp4", html)
+
+    def test_no_video_no_badge(self):
+        self.ingest("catalog", self._feed(self.MEDIA[:2]))      # photos only
+        self.assertFalse(self.store.product("L1")["has_video"])
+        self.assertNotIn('class="badge-video"', self.client.get("/").get_data(as_text=True))
+
+    def test_the_flag_follows_the_feed(self):
+        self.ingest("catalog", self._feed(self.MEDIA))
+        self.assertTrue(self.store.product("L1")["has_video"])
+        self.ingest("catalog", self._feed(self.MEDIA[:1]))
+        self.assertFalse(self.store.product("L1")["has_video"])
+
+    def test_an_older_feed_leaves_the_item_page_as_it_was(self):
+        html = self.client.get("/item/L1").get_data(as_text=True)     # seeded, no media
+        self.assertEqual(self.store.media_for("L1"), [])
+        self.assertNotIn('class="thumbs"', html)
+        self.assertNotIn("more view", html)
+        self.assertIn('src="/img/L1"', html)                  # the hero, exactly as before
+
+    def test_one_picture_is_not_a_gallery(self):
+        self.ingest("catalog", self._feed(self.MEDIA[:1]))
+        html = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertNotIn('class="thumbs"', html)
+        self.assertNotIn("<script>", html.split("</form>")[-1])       # no swap script either
+
+    def test_each_feed_replaces_the_gallery_rather_than_adding_to_it(self):
+        self.ingest("catalog", self._feed(self.MEDIA))
+        self.ingest("catalog", self._feed(self.MEDIA[:2]))
+        self.assertEqual(len(self.store.media_for("L1")), 2)
+        self.ingest("catalog", CATALOG)                                # a feed with no media at all
+        self.assertEqual(self.store.media_for("L1"), [])
+
+    def test_a_netsuite_url_is_never_linked_past_the_hero(self):
+        ns = "https://4253816.app.netsuite.com/core/media/media.nl?id=1&c=4253816"
+        self.ingest("catalog", self._feed([{"url": ns, "kind": "image"}] + self.MEDIA[1:2]
+                                          + [{"url": ns.replace("id=1", "id=2"), "kind": "image"}]))
+        urls = [m["url"] for m in self.store.media_for("L1")]
+        self.assertEqual(urls, [ns, self.MEDIA[1]["url"]])            # the second one is dropped
+        html = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertNotIn("netsuite.com", html)                        # the hero goes through /img
+
+    def test_junk_and_repeats_never_reach_the_table(self):
+        self.ingest("catalog", self._feed([
+            self.MEDIA[0], self.MEDIA[0],                             # repeat
+            {"url": "https://img/manual.pdf", "kind": "document"},    # not showable
+            {"url": "", "kind": "image"},                             # no url
+            "not-a-mapping",
+            self.MEDIA[1],
+        ]))
+        self.assertEqual([m["url"] for m in self.store.media_for("L1")],
+                         [self.MEDIA[0]["url"], self.MEDIA[1]["url"]])
+
+    def test_capped(self):
+        many = [{"url": f"https://images.salsify.com/image/upload/s--x--/{n}.jpg", "kind": "image"}
+                for n in range(30)]
+        self.ingest("catalog", self._feed(many))
+        self.assertEqual(len(self.store.media_for("L1")), D.Store.MAX_MEDIA)
+
+    def test_the_gallery_is_recorded_in_what_the_buyer_did(self):
+        self.ingest("catalog", self._feed(self.MEDIA))
+        self.client.get("/item/L1")
+        ev = [e for e in self.store.events_since(0) if e["kind"] == "item_viewed"][-1]
+        self.assertEqual((ev["payload"]["media"], ev["payload"]["videos"]), (4, 1))

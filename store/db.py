@@ -71,7 +71,30 @@ products = sa.Table(
     # (1 = first), NULL for everything else.  A merchandising rank and nothing
     # else: it says "show this early", never why.
     sa.Column("featured_rank", sa.Integer),
+    # Whether there is a video to watch, so the sheet can say so before a buyer
+    # clicks in (JJ, 2026-09-09: "that would be great content"). Derived from the
+    # media list at ingest; the gallery itself lives in `media`.
+    sa.Column("has_video", sa.Boolean, nullable=False, default=False),
     sa.Column("active", sa.Boolean, nullable=False, default=True),
+    sa.Column("updated_at", sa.String(32), nullable=False),
+)
+
+# Everything else there is to look at for one SKU, in display order, ``idx`` 0
+# being the picture the sheet shows (AOI 2026-09-09).
+#
+# **Urls, not bytes.** The hero is proxied through /img/<sku> because it can be a
+# NetSuite file-cabinet link carrying the account id, and because the sheet must
+# render whether or not anything else is up. Everything here comes from Salsify's
+# public CDN, so it is linked directly: caching 2.2x more images would multiply
+# the store's Postgres for pictures a buyer sees only after clicking into an
+# item, and videos are far too big to hold at all. A thumbnail that fails to load
+# is a thumbnail that fails to load.
+media = sa.Table(
+    "media", metadata,
+    sa.Column("sku", sa.String(64), primary_key=True),
+    sa.Column("idx", sa.Integer, primary_key=True),
+    sa.Column("url", sa.Text, nullable=False),
+    sa.Column("kind", sa.String(10), nullable=False, default="image"),   # image | video
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
 
@@ -334,8 +357,9 @@ class Store:
 
     def ingest_catalog(self, items: Iterable[dict[str, Any]], *, as_of: str | None, generated_at: str | None) -> int:
         now = now_iso()
-        rows = []
+        rows, media_rows = [], []
         for it in items:
+            media_rows.extend(self._media_rows(it, now))
             rows.append({
                 "sku": str(it["sku"]), "internal_id": str(it.get("internal_id") or ""),
                 "description": str(it.get("description") or it["sku"]), "image_url": str(it.get("image_url") or ""),
@@ -362,12 +386,19 @@ class Store:
                 # An older AOI sends no rank at all: nothing is featured, and the
                 # sheet reads in brand / category order exactly as before.
                 "featured_rank": (int(it["featured_rank"]) if it.get("featured_rank") else None),
+                "has_video": any(m["kind"] == "video" for m in media_rows if m["sku"] == str(it["sku"])),
                 "active": True, "updated_at": now,
             })
         with self.engine.begin() as conn:
             # Full snapshot: anything not in this feed is no longer for sale.
             conn.execute(sa.update(products).values(active=False))
             _upsert(conn, products, rows, "sku")
+            # Galleries are replaced wholesale, not merged: a picture withdrawn
+            # in Salsify has to disappear here too, and a row keyed (sku, idx)
+            # would otherwise keep the old one at the end of the list.
+            conn.execute(sa.delete(media))
+            if media_rows:
+                conn.execute(media.insert(), media_rows)
             conn.execute(feed_runs.insert().values(kind="catalog", count=len(rows), as_of=as_of,
                                                    generated_at=generated_at, received_at=now))
         return len(rows)
@@ -627,6 +658,53 @@ class Store:
         if companies is not None and p["company"] and p["company"] not in set(companies):
             return None                                  # not sold by any company this buyer is set up with
         return p
+
+    MEDIA_KINDS: tuple[str, ...] = ("image", "video")
+    MAX_MEDIA = 12
+    # Hosts whose urls must never reach a buyer's browser (see _media_rows).
+    UNLINKABLE_HOSTS: tuple[str, ...] = ("netsuite.com",)
+
+    @classmethod
+    def _media_rows(cls, item: dict[str, Any], now: str) -> list[dict[str, Any]]:
+        """One row per showable thing, in the order AOI sent them.
+
+        A feed without ``media`` — an older AOI — yields nothing here, and the
+        item page falls back to the hero on its own."""
+        sku = str(item.get("sku") or "").strip()
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for m in (item.get("media") or []):
+            if not isinstance(m, Mapping):
+                continue
+            url, kind = str(m.get("url") or "").strip(), str(m.get("kind") or "").strip().lower()
+            if not url or kind not in cls.MEDIA_KINDS or url in seen:
+                continue
+            # Everything past the hero is linked into the buyer's browser, and a
+            # NetSuite file-cabinet url carries the account id. The hero is
+            # exempt because it is served from our own cache at /img/<sku>, never
+            # linked; anything after it that is not safe to hand out is dropped
+            # rather than exposed, whatever the feed says.
+            if out and any(h in url.lower() for h in cls.UNLINKABLE_HOSTS):
+                continue
+            seen.add(url)
+            out.append({"sku": sku, "idx": len(out), "url": url, "kind": kind, "updated_at": now})
+            if len(out) >= cls.MAX_MEDIA:
+                break
+        return out
+
+    def media_for(self, sku: str) -> list[dict[str, Any]]:
+        """``[{idx, url, kind}]`` in display order for one SKU."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(sa.select(media).where(media.c.sku == str(sku))
+                                .order_by(media.c.idx)).mappings().all()
+        return [{"idx": r["idx"], "url": r["url"], "kind": r["kind"]} for r in rows]
+
+    def media_counts(self) -> dict[str, int]:
+        """How much there is to look at, for the admin page."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(sa.select(media.c.kind, sa.func.count())
+                                .group_by(media.c.kind)).all()
+        return {str(k): int(n) for k, n in rows}
 
     def products_by_skus(self, skus: Iterable[str]) -> dict[str, dict[str, Any]]:
         wanted = [str(s) for s in skus]
@@ -1070,6 +1148,7 @@ def _ensure_columns(eng: Engine) -> None:
     insp = sa.inspect(eng)
     wanted = {"products": {"master_pack": "INTEGER NOT NULL DEFAULT 0", "inner_pack": "INTEGER NOT NULL DEFAULT 0",
                            "featured_rank": "INTEGER",
+                           "has_video": "BOOLEAN NOT NULL DEFAULT FALSE",
                            "company": "VARCHAR(20) NOT NULL DEFAULT ''",
                            "listed_since": "VARCHAR(10)", "price_changed_at": "VARCHAR(10)", "price_was": "NUMERIC(12,2)",
                            "original_price": "NUMERIC(12,2) NOT NULL DEFAULT 0",
