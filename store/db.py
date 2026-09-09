@@ -7,6 +7,7 @@ The schema is the *entire* knowledge of the store. Compare it with the AOI
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
@@ -121,21 +122,28 @@ customers = sa.Table(
     sa.Column("rep_name", sa.String(120), default=""),
     sa.Column("house_account", sa.Boolean, nullable=False, default=False),
     sa.Column("accounts_json", sa.Text, nullable=False, default="{}"),   # {company: customer id in that subsidiary}
-    # How this account is priced (JJ / Goodwill, 2026-09-09), set in AOI and fed
-    # here: "offer" is the sheet everyone has had — wholesale and a blank box —
-    # and "firm" replaces it with the final price we will take, per SKU. The
-    # store never learns why a firm price is what it is; it only shows it.
-    sa.Column("price_mode", sa.String(10), nullable=False, default="offer"),
+    # Which price list this account buys off (JJ / Goodwill, 2026-09-09). NULL is
+    # the offer sheet everyone has had — wholesale and a blank box; a list id
+    # replaces it with the final price we will take, per SKU. The store never
+    # learns why a price on a list is what it is; it only shows it.
+    sa.Column("price_list_id", sa.String(64)),
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
 
-# The firm price per customer + SKU, computed in AOI and pushed as a full
-# snapshot. No basis, no markup, no cost: one number per line, which is the
-# whole point of a firm-price account.
-customer_prices = sa.Table(
-    "customer_prices", metadata,
-    sa.Column("customer_id", sa.String(32), primary_key=True),
+# The price lists AOI publishes, and the price per SKU on each. A list is named
+# once -- "Landed cost + 5%" -- for the admin who assigns it, and never for a
+# buyer, who only ever sees "Your price". No basis, no markup and no cost cross:
+# one number per line, which is the whole point of a firm-price account.
+price_lists = sa.Table(
+    "price_lists", metadata,
+    sa.Column("list_id", sa.String(64), primary_key=True),
+    sa.Column("label", sa.String(160), nullable=False, default=""),
+)
+
+price_list_items = sa.Table(
+    "price_list_items", metadata,
+    sa.Column("list_id", sa.String(64), primary_key=True),
     sa.Column("sku", sa.String(64), primary_key=True),
     sa.Column("price", sa.Numeric(12, 2), nullable=False),
 )
@@ -190,6 +198,10 @@ buyers = sa.Table(
     # liquidator to reach the bottom floor is the obvious exploit. Defaults to
     # the strictest lane, so an unclassified account never gets the lowest floor.
     sa.Column("buyer_class", sa.String(20), nullable=False, default="regional"),
+    # Which price list they buy off, or NULL for the offer sheet (JJ / Goodwill,
+    # 2026-09-09). Assigned here rather than in AOI because this is where the
+    # real outside buyers live: AOI has never heard of Goodwill of Minnesota.
+    sa.Column("price_list_id", sa.String(64)),
     sa.Column("invite_token", sa.String(64)),
     sa.Column("created_at", sa.String(32), nullable=False),
     sa.Column("approved_at", sa.String(32)),
@@ -326,10 +338,10 @@ def now_iso() -> str:
 BUYER_CLASSES: tuple[str, ...] = ("independent", "regional", "liquidator")
 DEFAULT_BUYER_CLASS = "regional"
 
-# How an account is priced. Anything unrecognised -- and a feed from an older AOI
-# that sends nothing at all -- is the sheet everyone already has.
-PRICE_MODES: tuple[str, ...] = ("offer", "firm")
-DEFAULT_PRICE_MODE = "offer"
+# A price list id is a slug AOI coins ("cost_plus_5"). Anything else -- and a
+# feed from an older AOI that sends nothing at all -- is no list, which is the
+# offer sheet everyone already has.
+_LIST_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def _clean_class(value: Any) -> str:
@@ -337,9 +349,12 @@ def _clean_class(value: Any) -> str:
     return v if v in BUYER_CLASSES else DEFAULT_BUYER_CLASS
 
 
-def clean_price_mode(value: Any) -> str:
+def clean_list_id(value: Any) -> str:
+    """The slug, or "" for anything else -- and "" is the offer sheet, so junk
+    can only ever cost a buyer their firm prices, never hand them someone
+    else's."""
     v = str(value or "").strip().lower()
-    return v if v in PRICE_MODES else DEFAULT_PRICE_MODE
+    return v if _LIST_ID.match(v) else ""
 
 
 def make_engine(url: str) -> Engine:
@@ -439,7 +454,7 @@ class Store:
                 "buyer_class": str(it.get("buyer_class") or "independent"), "volume_tier": str(it.get("volume_tier") or ""),
                 "rep_name": str(it.get("rep_name") or ""), "house_account": bool(it.get("house_account")),
                 "accounts_json": json.dumps({str(k): str(v) for k, v in (it.get("accounts") or {}).items()}, sort_keys=True),
-                "price_mode": clean_price_mode(it.get("price_mode")),
+                "price_list_id": clean_list_id(it.get("price_list_id")) or None,
                 "active": True, "updated_at": now,
             })
             for e in it.get("emails") or []:
@@ -472,22 +487,23 @@ class Store:
         return len(rows)
 
     def ingest_prices(self, items: Iterable[dict[str, Any]], *, as_of: str | None, generated_at: str | None) -> int:
-        """Firm prices, one entry per firm-priced customer:
-        ``[{"customer_id": "717935", "prices": {"SKU": 6.83, ...}}]``.
+        """The price lists AOI publishes, one entry per list:
+        ``[{"list_id": "cost_plus_5", "label": "Landed cost + 5%",
+        "prices": {"SKU": 6.83, ...}}]``.
 
-        A full snapshot like every other feed: the table is replaced by what
-        arrives, so a customer moved back to offer mode -- or an empty list,
-        which means there are no firm accounts at all -- simply stops having
-        prices. Returns the number of customer entries, matching the envelope's
-        ``count``."""
+        A full snapshot like every other feed: both tables are replaced by what
+        arrives, so a list AOI deactivated -- or an empty list of lists, which
+        means there are none at all -- simply stops existing, and the buyers on
+        it fall back to the offer sheet. Returns the number of lists, matching
+        the envelope's ``count``."""
         now = now_iso()
+        lists: dict[str, dict[str, Any]] = {}
         rows: dict[tuple[str, str], dict[str, Any]] = {}
-        entries = 0
         for it in items:
-            cid = str(it.get("customer_id") or "").strip()
-            if not cid:
-                continue
-            entries += 1
+            lid = clean_list_id(it.get("list_id"))
+            if not lid:
+                continue                           # no slug, no list: we would not know who is on it
+            lists[lid] = {"list_id": lid, "label": str(it.get("label") or "")[:160]}
             for sku, price in (it.get("prices") or {}).items():
                 s = str(sku).strip()
                 try:
@@ -496,25 +512,42 @@ class Store:
                     continue
                 if not s or p <= 0:
                     continue                       # a zero is not a price we would honour
-                rows[(cid, s)] = {"customer_id": cid, "sku": s, "price": p}
+                rows[(lid, s)] = {"list_id": lid, "sku": s, "price": p}
         with self.engine.begin() as conn:
-            conn.execute(sa.delete(customer_prices))
+            conn.execute(sa.delete(price_list_items))
+            conn.execute(sa.delete(price_lists))
+            if lists:
+                conn.execute(price_lists.insert(), list(lists.values()))
             values = list(rows.values())
             step = 300                             # SQLite's bound-variable cap, as in _upsert
             for i in range(0, len(values), step):
-                conn.execute(customer_prices.insert(), values[i:i + step])
-            conn.execute(feed_runs.insert().values(kind="prices", count=entries, as_of=as_of,
+                conn.execute(price_list_items.insert(), values[i:i + step])
+            conn.execute(feed_runs.insert().values(kind="prices", count=len(lists), as_of=as_of,
                                                    generated_at=generated_at, received_at=now))
-        return entries
+        return len(lists)
 
-    def firm_prices_for(self, customer_id: str) -> dict[str, float]:
-        """``{sku: price}`` for one customer, empty when they have none."""
-        cid = str(customer_id or "").strip()
-        if not cid:
+    def price_lists(self) -> list[dict[str, Any]]:
+        """Every list AOI has published, for the admin who assigns them."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(sa.select(price_lists).order_by(price_lists.c.label, price_lists.c.list_id)).mappings().all()
+        return [dict(r) for r in rows]
+
+    def price_list(self, list_id: str) -> dict[str, Any] | None:
+        lid = clean_list_id(list_id)
+        if not lid:
+            return None
+        with self.engine.connect() as conn:
+            r = conn.execute(sa.select(price_lists).where(price_lists.c.list_id == lid)).mappings().first()
+        return dict(r) if r else None
+
+    def list_prices_for(self, list_id: str) -> dict[str, float]:
+        """``{sku: price}`` on one list, empty when it holds none."""
+        lid = clean_list_id(list_id)
+        if not lid:
             return {}
         with self.engine.connect() as conn:
-            rows = conn.execute(sa.select(customer_prices.c.sku, customer_prices.c.price)
-                                .where(customer_prices.c.customer_id == cid)).all()
+            rows = conn.execute(sa.select(price_list_items.c.sku, price_list_items.c.price)
+                                .where(price_list_items.c.list_id == lid)).all()
         return {str(sku): float(price) for sku, price in rows}
 
     def ingest_invites(self, items: Iterable[dict[str, Any]], *, as_of: str | None, generated_at: str | None) -> int:
@@ -694,13 +727,17 @@ class Store:
         with self.engine.connect() as conn:
             return [dict(r) for r in conn.execute(stmt).mappings().all()]
 
-    def set_buyer_status(self, buyer_id: int, status: str, *, by: str = "", buyer_class: str | None = None) -> None:
+    def set_buyer_status(self, buyer_id: int, status: str, *, by: str = "", buyer_class: str | None = None,
+                         price_list_id: str | None = None) -> None:
         now = now_iso()
         vals: dict[str, Any] = {"status": status, "updated_at": now}
         if status == "approved":
             vals.update(approved_at=now, approved_by=by)
         if buyer_class is not None:
             vals["buyer_class"] = _clean_class(buyer_class)
+        if price_list_id is not None:
+            lid = clean_list_id(price_list_id)
+            vals["price_list_id"] = (lid if lid and self.price_list(lid) else None)
         with self.engine.begin() as conn:
             conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id)).values(**vals))
 
@@ -712,6 +749,20 @@ class Store:
             conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id))
                          .values(buyer_class=cls, updated_at=now_iso()))
         return cls
+
+    def set_buyer_price_list(self, buyer_id: int, list_id: str) -> str:
+        """Which price list this buyer buys off (JJ / Goodwill, 2026-09-09), or
+        "" for the offer sheet.  An admin's call, like the class: it is the
+        difference between a buyer bidding and a buyer being quoted.  A list id
+        we have never been fed is stored as nothing, so a buyer can only ever
+        land back on the offer sheet.  Returns what was actually stored."""
+        lid = clean_list_id(list_id)
+        if lid and not self.price_list(lid):
+            lid = ""
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id))
+                         .values(price_list_id=lid or None, updated_at=now_iso()))
+        return lid
 
     def buyer_offer_counts(self) -> dict[str, int]:
         with self.engine.connect() as conn:
@@ -818,35 +869,35 @@ class Store:
         return col == vals[0] if len(vals) == 1 else col.in_(vals)
 
     @classmethod
-    def _priced_for(cls, customer_id: str, max_price: float | None = None):
-        """Correlated EXISTS on ``customer_prices``: this SKU carries a firm
-        price for that customer (optionally at or under ``max_price``). A
-        subquery rather than a list of SKUs because a firm account can hold
-        thousands of them and SQLite counts bound variables."""
-        conds = [customer_prices.c.customer_id == str(customer_id),
-                 customer_prices.c.sku == products.c.sku,
-                 customer_prices.c.price > 0]
+    def _priced_on(cls, list_id: str, max_price: float | None = None):
+        """Correlated EXISTS on ``price_list_items``: this SKU carries a price
+        on that list (optionally at or under ``max_price``). A subquery rather
+        than a list of SKUs because a list can hold thousands of them and
+        SQLite counts bound variables."""
+        conds = [price_list_items.c.list_id == str(list_id),
+                 price_list_items.c.sku == products.c.sku,
+                 price_list_items.c.price > 0]
         if max_price:
-            conds.append(customer_prices.c.price <= float(max_price))
+            conds.append(price_list_items.c.price <= float(max_price))
         return sa.select(sa.literal(1)).where(*conds).exists()
 
     @classmethod
     def _product_filter(cls, *, brand=None, category=None, subcategory=None, q=None, companies=None,
                         min_units=None, min_cases=None, new_since=None, featured_only=False,
-                        max_price=None, firm_customer_id=None):
+                        max_price=None, price_list_id=None):
         """Every word of ``q`` must appear somewhere in SKU, description, brand,
         category or subcategory; ``companies`` limits to the subsidiaries the
         buyer holds an account with (or the invite covers). ``brand`` /
         ``category`` / ``subcategory`` each take one value or a list.
 
         ``max_price`` is "under $__" measured on **the price this buyer is
-        actually looking at**: their own firm price where ``firm_customer_id``
-        is given, the wholesale anchor otherwise.  A firm buyer sees only the
-        SKUs they have a price for, so ``firm_customer_id`` narrows the sheet
-        on its own as well."""
+        actually looking at**: the price on their list where ``price_list_id``
+        is given, the wholesale anchor otherwise.  A buyer on a list sees only
+        the SKUs that list carries a price for, so ``price_list_id`` narrows
+        the sheet on its own as well."""
         conds = [products.c.active.is_(True), products.c.qty_available > 0]
-        if firm_customer_id:
-            conds.append(cls._priced_for(firm_customer_id, max_price))
+        if price_list_id:
+            conds.append(cls._priced_on(price_list_id, max_price))
         elif max_price:
             conds.append(products.c.wholesale <= float(max_price))
         if companies is not None:
@@ -874,13 +925,13 @@ class Store:
                       q: str | None = None, sort: str = "default", min_units: int | None = None,
                       min_cases: int | None = None, companies: Iterable[str] | None = None,
                       new_since: str | None = None, featured_only: bool = False,
-                      max_price: float | None = None, firm_customer_id: str | None = None,
+                      max_price: float | None = None, price_list_id: str | None = None,
                       limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
                                                                q=q, companies=companies, min_units=min_units,
                                                                min_cases=min_cases, new_since=new_since,
                                                                featured_only=featured_only, max_price=max_price,
-                                                               firm_customer_id=firm_customer_id))
+                                                               price_list_id=price_list_id))
         stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
@@ -889,24 +940,24 @@ class Store:
                        min_units: int | None = None, min_cases: int | None = None,
                        companies: Iterable[str] | None = None, new_since: str | None = None,
                        featured_only: bool = False, max_price: float | None = None,
-                       firm_customer_id: str | None = None) -> int:
+                       price_list_id: str | None = None) -> int:
         stmt = sa.select(sa.func.count()).select_from(products).where(
             *self._product_filter(brand=brand, category=category, subcategory=subcategory, q=q, companies=companies,
                                   min_units=min_units, min_cases=min_cases, new_since=new_since,
                                   featured_only=featured_only, max_price=max_price,
-                                  firm_customer_id=firm_customer_id))
+                                  price_list_id=price_list_id))
         with self.engine.connect() as conn:
             return int(conn.execute(stmt).scalar() or 0)
 
     def facets(self, *, brand=None, category=None,
                companies: Iterable[str] | None = None,
-               firm_customer_id: str | None = None) -> dict[str, list[Any]]:
+               price_list_id: str | None = None) -> dict[str, list[Any]]:
         """Filter choices that still return something: categories narrow to the
-        chosen brands, subcategories to brands + categories.  A firm-price buyer
-        is offered only the brands their own priced SKUs are in."""
+        chosen brands, subcategories to brands + categories.  A buyer on a price
+        list is offered only the brands the SKUs on it are in."""
         base = [products.c.active.is_(True), products.c.qty_available > 0]
-        if firm_customer_id:
-            base.append(self._priced_for(firm_customer_id))
+        if price_list_id:
+            base.append(self._priced_on(price_list_id))
         if companies is not None:
             base.append(sa.or_(products.c.company == "", products.c.company.in_(list(companies))))
         brand_cond = self._in_any(products.c.brand, brand)
@@ -1229,7 +1280,7 @@ def _cust(row) -> dict[str, Any]:
         accounts = {c: d["customer_id"] for c in ALL_COMPANIES}
     d["accounts"] = accounts
     d["companies"] = [c for c in ALL_COMPANIES if c in accounts] or list(accounts)
-    d["price_mode"] = clean_price_mode(d.get("price_mode"))
+    d["price_list_id"] = clean_list_id(d.get("price_list_id"))
     return d
 
 
@@ -1263,11 +1314,12 @@ def _ensure_columns(eng: Engine) -> None:
                            "published_label": "VARCHAR(40) NOT NULL DEFAULT ''",
                            "published_disc_pct": "INTEGER NOT NULL DEFAULT 0"},
               "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'",
-                            "price_mode": "VARCHAR(10) NOT NULL DEFAULT 'offer'"},
+                            "price_list_id": "VARCHAR(64)"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
               "login_tokens": {"subject": "VARCHAR(200)"},
               "rounds": {"opened_at": "VARCHAR(32)"},
-              "buyers": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'"},
+              "buyers": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'",
+                         "price_list_id": "VARCHAR(64)"},
               "invites": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'"}}
     with eng.begin() as conn:
         for table, cols in wanted.items():

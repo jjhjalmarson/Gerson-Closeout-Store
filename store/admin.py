@@ -50,6 +50,7 @@ def home():
     buyers = [dict(b, offers=counts.get(f"buyer:{b['id']}", 0)) for b in store.list_buyers() if b["status"] in ("approved", "suspended")]
     return render_template("admin.html", admin_email=current_admin(), pending=store.list_buyers(status="pending"),
                            buyers=buyers, invites=store.list_signup_invites(), classes=list(BUYER_CLASSES),
+                           price_lists=store.price_lists(),
                            has_password=bool(store.admin_password_hash(current_admin())),
                            digest=digest.status(_ctx()))
 
@@ -156,7 +157,8 @@ def set_status(buyer_id: int):
     if not b:
         abort(404)
     ctx.store.set_buyer_status(buyer_id, status, by=current_admin(),
-                               buyer_class=request.form.get("buyer_class") or None)
+                               buyer_class=request.form.get("buyer_class") or None,
+                               price_list_id=request.form.get("price_list_id") if "price_list_id" in request.form else None)
     if status == "approved":
         token = ctx.store.create_login_token(b["email"], "", APPROVAL_LINK_MINUTES, subject=f"buyer:{buyer_id}")
         link = f"{ctx.cfg.base_url}{url_for('shop.login_token', token=token)}"
@@ -183,4 +185,26 @@ def set_class(buyer_id: int):
         abort(404)
     cls = ctx.store.set_buyer_class(buyer_id, request.form.get("buyer_class") or "")
     flash(f"{b['company']} is now priced as {cls}.")
+    return redirect(url_for("admin.home"))
+
+
+@bp.post("/buyers/<int:buyer_id>/price_list")
+@admin_required
+def set_price_list(buyer_id: int):
+    """Which price list this buyer buys off (JJ / Goodwill, 2026-09-09).
+
+    Blank is the offer sheet everyone has: wholesale and a blank box. A list is
+    one AOI publishes, and puts "Your price" on every item on it with nothing to
+    bid with -- what Jennifer at Goodwill asked for. The label is ours; she only
+    ever sees the number."""
+    ctx = _ctx()
+    b = ctx.store.buyer(buyer_id)
+    if not b:
+        abort(404)
+    lid = ctx.store.set_buyer_price_list(buyer_id, request.form.get("price_list_id") or "")
+    if lid:
+        label = next((p["label"] for p in ctx.store.price_lists() if p["list_id"] == lid), lid)
+        flash(f"{b['company']} now buys off {label or lid}: their sheet shows your price, not wholesale.")
+    else:
+        flash(f"{b['company']} is back on the offer sheet.")
     return redirect(url_for("admin.home"))

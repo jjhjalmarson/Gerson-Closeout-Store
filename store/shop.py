@@ -28,7 +28,7 @@ from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, 
 from werkzeug.security import check_password_hash
 
 from . import mail
-from .db import ALL_COMPANIES
+from .db import ALL_COMPANIES, clean_list_id
 
 bp = Blueprint("shop", __name__)
 PAGE_SIZE = 60
@@ -58,9 +58,9 @@ def _resolve_buyer() -> dict[str, Any] | None:
             return {"kind": "buyer", "key": f"buyer:{b['id']}", "token": "", "name": b["company"], "contact": b.get("contact") or "",
                     "email": b["email"], "companies": list(ALL_COMPANIES), "customer_id": None, "rep_name": "",
                     "buyer_id": b["id"], "buyer_class": b.get("buyer_class") or "regional",
-                    # Firm prices are computed per NetSuite account in AOI, so only an
-                    # allowlisted customer can be on them; everyone else bids as before.
-                    "price_mode": "offer"}
+                    # Goodwill and the rest are buyers approved here, not AOI accounts
+                    # (JJ, 2026-09-02), so this is where their price list is assigned.
+                    **_priced_off(store, b.get("price_list_id"))}
         return None
     tok = session.get("invite")
     if tok:
@@ -69,7 +69,8 @@ def _resolve_buyer() -> dict[str, Any] | None:
             return {"kind": "invite", "key": f"inv:{tok}", "token": tok, "name": inv["label"] or "Guest",
                     "contact": inv.get("contact") or "", "email": inv.get("email") or "",
                     "companies": inv["companies"], "customer_id": None, "rep_name": "",
-                    "buyer_class": inv.get("buyer_class") or "regional", "price_mode": "offer"}
+                    "buyer_class": inv.get("buyer_class") or "regional",
+                    "price_mode": "offer", "price_list_id": ""}
         return None
     cid = session.get("customer_id")
     if cid:
@@ -79,21 +80,33 @@ def _resolve_buyer() -> dict[str, Any] | None:
                     "contact": "", "email": "", "companies": cust["companies"], "customer_id": cust["customer_id"],
                     "rep_name": cust.get("rep_name") or "", "accounts": cust["accounts"],
                     "buyer_class": cust.get("buyer_class") or "regional",
-                    # "firm" = AOI sends this account a price per SKU and the sheet
-                    # shows that instead of wholesale and a blank offer box.
-                    "price_mode": cust.get("price_mode") or "offer"}
+                    # An allowlisted account can be put on a list too -- the field
+                    # rides the customers feed rather than being set here.
+                    **_priced_off(store, cust.get("price_list_id"))}
     return None
 
 
+def _priced_off(store, raw: Any) -> dict[str, str]:
+    """The buyer fields that decide which surface they get.  ``firm`` is a list
+    that is assigned **and** still published: a list AOI deactivated leaves the
+    buyer on the offer sheet rather than on stale prices, silently, because the
+    alternative is an empty sheet and a phone call."""
+    lid = clean_list_id(raw)
+    if lid and not store.price_list(lid):
+        lid = ""
+    return {"price_list_id": lid, "price_mode": "firm" if lid else "offer"}
+
+
 def _firm_prices(store, buyer: Mapping[str, Any] | None) -> dict[str, float] | None:
-    """``{sku: price}`` for a firm-price account, or **None** for everyone else
-    -- the flag the whole surface branches on.  Read once per request."""
-    b = buyer or {}
-    if b.get("price_mode") != "firm" or not b.get("customer_id"):
+    """``{sku: price}`` off this buyer's price list, or **None** when they are
+    not on one -- the flag the whole surface branches on.  Read once per
+    request."""
+    lid = (buyer or {}).get("price_list_id")
+    if not lid:
         return None
     cached = getattr(g, "firm_prices", None)
     if cached is None:
-        cached = store.firm_prices_for(b["customer_id"])
+        cached = store.list_prices_for(lid)
         g.firm_prices = cached
     return cached
 
@@ -398,18 +411,18 @@ def home():
     featured_flag = a.get("featured") == "1"
     filtered = any(f.values()) or new_flag or featured_flag
     companies = g.buyer["companies"]
-    # A firm-price account sees its own priced SKUs and nothing else: an item we
+    # A buyer on a price list sees the SKUs on it and nothing else: an item we
     # have not quoted them is not on their sheet at all.
     firm = _firm_prices(store, g.buyer)
-    firm_cid = g.buyer["customer_id"] if firm is not None else None
+    lid = g.buyer["price_list_id"] if firm is not None else None
     total = store.count_products(**f, companies=companies, new_since=new_since, featured_only=featured_flag,
-                                 firm_customer_id=firm_cid)
-    new_total = store.count_products(companies=companies, new_since=cutoff, firm_customer_id=firm_cid)
-    featured_total = store.count_products(companies=companies, featured_only=True, firm_customer_id=firm_cid)
+                                 price_list_id=lid)
+    new_total = store.count_products(companies=companies, new_since=cutoff, price_list_id=lid)
+    featured_total = store.count_products(companies=companies, featured_only=True, price_list_id=lid)
     pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
     page = min(page, pages)
     items = store.list_products(**f, sort=sort, companies=companies, new_since=new_since,
-                                featured_only=featured_flag, firm_customer_id=firm_cid,
+                                featured_only=featured_flag, price_list_id=lid,
                                 limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
     draft = store.draft(g.buyer["key"])
     for p in items:
@@ -428,7 +441,7 @@ def home():
        results=total, no_results=(total == 0 and bool(f["q"])) or None)
     return render_template("sheet.html", buyer=g.buyer, items=items,
                            facets=store.facets(brand=f["brand"], category=f["category"], companies=companies,
-                                               firm_customer_id=firm_cid),
+                                               price_list_id=lid),
                            brand=f["brand"], category=f["category"], subcategory=f["subcategory"], q=f["q"] or "",
                            min_units=f["min_units"] or "", min_cases=f["min_cases"] or "",
                            max_price=("%.2f" % f["max_price"]).rstrip("0").rstrip(".") if f["max_price"] else "",
@@ -806,8 +819,10 @@ def offer_submit():
         "total": total, "wholesale_total": whsl_total,
         "pct_of_wholesale": round(total / whsl_total, 4) if whsl_total > 0 else None,
         # Always present, so AOI's desk can tell an offer to negotiate from an
-        # order at prices we already quoted (2026-09-09).
+        # order at prices we already quoted (2026-09-09), and which list quoted
+        # them when it was the latter.
         "price_mode": "firm" if firm else "offer",
+        **({"price_list_id": g.buyer["price_list_id"]} if firm else {}),
     }
     ref = store.enqueue("offer", payload, customer_id=g.buyer.get("customer_id"), buyer_key=g.buyer["key"])
     attachment = (f"offer-OF-{ref}.csv", _csv(lines).encode("utf-8"), "text/csv")
@@ -825,7 +840,8 @@ def offer_submit():
               body=_offer_text(payload, ref, for_buyer=True), html=_offer_html(payload, ref, for_buyer=True),
               attachments=[buyer_attachment])
     ev("offer_submitted", ref=f"OF-{ref}", lines=len(lines), units=payload["units"], total=total,
-       wholesale_total=whsl_total, pct_of_wholesale=payload["pct_of_wholesale"], price_mode=payload["price_mode"])
+       wholesale_total=whsl_total, pct_of_wholesale=payload["pct_of_wholesale"], price_mode=payload["price_mode"],
+       price_list_id=payload.get("price_list_id"))
     store.set_draft(g.buyer["key"], {})
     return render_template("offer_sent.html", buyer=g.buyer, ref=ref, payload=payload, draft_count=0, notified=bool(notified))
 
