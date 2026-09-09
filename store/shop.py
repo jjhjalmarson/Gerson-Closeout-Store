@@ -413,10 +413,17 @@ def item(sku: str):
     if not p:
         abort(404)
     d = store.draft(g.buyer["key"]).get(sku) or {}
+    # Everything there is to look at, which is the point of clicking in (JJ,
+    # 2026-09-09). idx 0 is the picture the sheet showed, so the gallery opens on
+    # what they just clicked. Empty for an older feed, and the page shows the
+    # hero alone exactly as before.
+    gallery = store.media_for(sku)
     ev("item_viewed", sku=p["sku"], brand=p.get("brand"), category=p.get("category"),
-       wholesale=p.get("wholesale"), qty_available=p.get("qty_available"))
+       wholesale=p.get("wholesale"), qty_available=p.get("qty_available"),
+       media=len(gallery) or None, videos=sum(1 for m in gallery if m["kind"] == "video") or None)
     return render_template("item.html", buyer=g.buyer, p=p, draft_qty=d.get("qty") or "",
                            draft_price=("%.2f" % d["price"]) if d.get("price") else "",
+                           gallery=gallery,
                            new_cutoff=new_cutoff(), draft_count=_draft_count(store, g.buyer))
 
 

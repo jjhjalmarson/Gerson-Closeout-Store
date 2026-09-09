@@ -4,7 +4,35 @@
 {% block body %}
 <p><a href="{{ url_for('shop.home') }}">← Offer sheet</a></p>
 <div style="display:grid;grid-template-columns:minmax(240px,420px) 1fr;gap:1.5rem">
-  <div>{% if p.image_url %}<img src="{{ url_for('shop.image', sku=p.sku) }}" alt="" style="width:100%;border-radius:8px;background:var(--panel)">{% endif %}</div>
+  <div>
+    {# The hero is served from our own cache; the rest come straight off
+       Salsify's CDN (see the `media` table). idx 0 is the hero, so the gallery
+       opens on the picture they clicked. #}
+    {% set extras = gallery[1:] if gallery else [] %}
+    <div class="gallery">
+      <div class="stage">
+        {% if p.image_url %}<img id="stageImg" src="{{ url_for('shop.image', sku=p.sku) }}" alt="">{% endif %}
+        <video id="stageVid" controls preload="metadata" hidden></video>
+      </div>
+      {% if extras %}
+      <div class="thumbs">
+        {% for m in gallery %}
+        <button type="button" class="thumb{% if loop.first %} on{% endif %}"
+                data-kind="{{ m.kind }}"
+                data-src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url else m.url }}"
+                aria-label="{{ 'Video' if m.kind == 'video' else 'View %d'|format(loop.index) }}">
+          {% if m.kind == 'video' %}<span class="play" title="Watch">&#9654;</span>
+          {% else %}<img src="{{ url_for('shop.image', sku=p.sku) if loop.first and p.image_url else m.url }}" alt="" loading="lazy">{% endif %}
+        </button>
+        {% endfor %}
+      </div>
+      {% set videos = gallery|selectattr('kind','equalto','video')|list|length %}
+      {% set photos = gallery|length - videos %}
+      <p class="muted" style="font-size:.8rem">{{ photos }} photo{{ '' if photos == 1 else 's' }}{% if videos %} ·
+        <b>{{ videos }} video{{ '' if videos == 1 else 's' }}</b> — click <span aria-hidden="true">&#9654;</span> to watch{% endif %}</p>
+      {% endif %}
+    </div>
+  </div>
   <div>
     {% if p.featured_rank or (p.listed_since and p.listed_since >= new_cutoff) %}<span class="badges">{% if p.featured_rank %}<span class="badge-featured" title="one of the items we are leading with">Featured</span>{% endif %}{% if p.listed_since and p.listed_since >= new_cutoff %}<span class="badge-new">New</span>{% endif %}</span>{% endif %}
     <h1>{{ p.description }}</h1>
@@ -21,4 +49,22 @@
     </form>
   </div>
 </div>
+{% if gallery and gallery|length > 1 %}
+<script>
+(function(){
+  // Click a thumbnail, it takes the stage. No fetch, no framework: every url is
+  // already in the page. A video is paused when it leaves the stage, so a buyer
+  // clicking through the views does not end up with sound from a hidden one.
+  const img = document.getElementById('stageImg'), vid = document.getElementById('stageVid');
+  document.querySelectorAll('.thumb').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.thumb').forEach(function(b){ b.classList.toggle('on', b === btn); });
+      const src = btn.dataset.src, isVideo = btn.dataset.kind === 'video';
+      if (vid) { vid.pause(); vid.hidden = !isVideo; if (isVideo && vid.src !== src) vid.src = src; }
+      if (img) { img.hidden = isVideo; if (!isVideo && src) img.src = src; }
+    });
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}
