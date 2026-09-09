@@ -1408,3 +1408,73 @@ class GoodwillBuyerTest(StoreTestCase):
         row = self.store.buyer(b["id"])
         self.assertEqual((row["price_list_id"], row["buyer_class"]), ("cost_plus_5", "liquidator"))
         self.assertIn("Your price", self.buyer.get("/").get_data(as_text=True))
+
+
+class SizedUrlTest(unittest.TestCase):
+    """Gallery urls are asked for at the size the slot needs.
+
+    Salsify hands out the untouched master: the asset behind one 56px thumbnail
+    measured **13 MB and 6648px wide** on 2026-09-09, so an item page with seven
+    views was ~90 MB. Cloudinary transformations fix it, but only after the
+    signature segment — before it, the url 404s."""
+
+    IMG = "https://images.salsify.com/image/upload/s--boSg-_7H--/pzprql3zoeyyezlv6so5.jpg"
+    VID = "https://images.salsify.com/video/upload/s--lX-r9FnZ--/qqamoxbcbgu7fhok8exh.mp4"
+
+    def test_the_transformation_goes_after_the_signature(self):
+        from store.images import sized
+        self.assertEqual(
+            sized(self.IMG, 120),
+            "https://images.salsify.com/image/upload/s--boSg-_7H--/"
+            "w_120,c_limit,f_auto,q_auto/pzprql3zoeyyezlv6so5.jpg")
+
+    def test_video_is_left_alone(self):
+        from store.images import sized
+        self.assertEqual(sized(self.VID, 900), self.VID)
+
+    def test_an_already_transformed_url_is_not_transformed_twice(self):
+        from store.images import sized
+        u = "https://images.salsify.com/image/upload/s--x--/w_120,c_limit/a.jpg"
+        self.assertEqual(sized(u, 900), u)
+
+    def test_anything_we_do_not_recognise_comes_back_untouched(self):
+        from store.images import sized
+        for u in ("https://4253816.app.netsuite.com/core/media/media.nl?id=1",
+                  "https://example.test/a.jpg", "/img/L1", "", None):
+            self.assertEqual(sized(u, 120), str(u or ""))
+
+    def test_no_width_is_no_transformation(self):
+        from store.images import sized
+        self.assertEqual(sized(self.IMG, 0), self.IMG)
+
+
+class GallerySizesTest(StoreTestCase):
+    """What the item page actually asks the browser to download."""
+
+    MEDIA = [{"url": "https://images.salsify.com/image/upload/s--a--/hero.jpg", "kind": "image"},
+             {"url": "https://images.salsify.com/image/upload/s--b--/detail.jpg", "kind": "image"},
+             {"url": "https://images.salsify.com/video/upload/s--c--/demo.mp4", "kind": "video"}]
+
+    def setUp(self):
+        super().setUp()
+        items = [({**it, "media": self.MEDIA} if it["sku"] == "L1" else it) for it in CATALOG["items"]]
+        self.ingest("catalog", {**CATALOG, "items": items})
+        self.ingest("customers", CUSTOMERS); self.ingest("invites", INVITES)
+        self.use_invite("ross-xyz")
+
+    def test_thumbnails_ask_for_thumbnails_and_the_stage_for_a_stage(self):
+        html = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertIn("w_120,c_limit,f_auto,q_auto/detail.jpg", html)      # the <img> in the strip
+        self.assertIn("w_900,c_limit,f_auto,q_auto/detail.jpg", html)      # what clicking it loads
+        # Nothing anywhere asks for the untransformed master.
+        self.assertNotIn("s--b--/detail.jpg", html)
+
+    def test_the_video_url_is_never_resized(self):
+        html = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertIn("s--c--/demo.mp4", html)
+        self.assertNotIn("w_900,c_limit,f_auto,q_auto/demo.mp4", html)
+
+    def test_the_hero_still_comes_from_our_own_cache(self):
+        html = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertIn('id="stageImg" src="/img/L1"', html)
+        self.assertNotIn("s--a--/hero.jpg", html)
