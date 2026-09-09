@@ -26,6 +26,10 @@ MAX_EDGE = 900          # px; enough for a product page, small enough to keep Po
 # as Salsify ships it 13,265 KB, at w_900 70 KB, at w_120 2.9 KB.
 STAGE_WIDTH = 900
 THUMB_WIDTH = 120
+# Video gets its own cap: the master on 45608 is 76 MB, and at 720px wide it is
+# 1.4 MB (measured 2026-09-09). 720 rather than 900 because a video is watched,
+# not inspected, and the saving is worth more than the pixels.
+VIDEO_WIDTH = 720
 JPEG_QUALITY = 82
 FETCH_TIMEOUT = 20.0
 BATCH = 400             # per background pass
@@ -43,21 +47,40 @@ _running = False
 # asset behind one 56px gallery thumbnail is 13 MB and 6648px wide, so an item
 # page with seven views was ~90 MB before this (measured 2026-09-09). The hero
 # is unaffected either way -- it is resized once into our own cache.
-_SALSIFY_IMAGE = re.compile(
-    r"^(https://images\.salsify\.com/image/upload/s--[^/]+--/)(?!(?:[a-z]+_[^/]+,?)+/)(.+)$")
+_SALSIFY = re.compile(
+    r"^(https://images\.salsify\.com/(image|video)/upload/s--[^/]+--/)"
+    r"(?!(?:[a-z]+_[^/]+,?)+/)(.+)$")
 
 
 def sized(url: Any, width: int) -> str:
     """``url`` asked for at ``width`` px, where that is something we can ask.
 
-    Only Salsify image urls can be resized; a video, a NetSuite link, an
-    already-transformed url or anything unrecognised comes back untouched, so
-    this is safe to wrap around every url in a template."""
+    Images and video both. ``f_auto`` is only asked of images: on a video it
+    invites Cloudinary to pick a container, and an mp4 the browser already plays
+    is not worth trading for that. A NetSuite link, an already-transformed url
+    or anything unrecognised comes back untouched, so this is safe to wrap
+    around every url in a template."""
     u = str(url or "")
-    m = _SALSIFY_IMAGE.match(u)
+    m = _SALSIFY.match(u)
     if not m or not width:
         return u
-    return f"{m.group(1)}w_{int(width)},c_limit,f_auto,q_auto/{m.group(2)}"
+    t = f"w_{int(width)},c_limit,q_auto" if m.group(2) == "video" else f"w_{int(width)},c_limit,f_auto,q_auto"
+    return f"{m.group(1)}{t}/{m.group(3)}"
+
+
+def poster(url: Any, width: int) -> str:
+    """A still frame from a video, as an image url, or "" for anything else.
+
+    Cloudinary will render a frame of a video as a jpeg if asked for one by
+    extension -- 1.9 KB at 120px, 33 KB at 900px. It turns the video thumbnail
+    from a grey box with a triangle on it into a picture of the thing, and gives
+    the player something to show before it is pressed."""
+    u = str(url or "")
+    m = _SALSIFY.match(u)
+    if not m or m.group(2) != "video" or not width:
+        return ""
+    stem = m.group(3).rsplit(".", 1)[0]
+    return f"{m.group(1)}w_{int(width)},c_limit,f_auto,q_auto/{stem}.jpg"
 
 
 def _resize(raw: bytes) -> tuple[bytes, str]:
