@@ -131,6 +131,9 @@ customers = sa.Table(
     # replaces it with the final price we will take, per SKU. The store never
     # learns why a price on a list is what it is; it only shows it.
     sa.Column("price_list_id", sa.String(64)),
+    # Which of the three surfaces (JJ, 2026-09-10) -- see PRICING_TIERS. An
+    # older AOI sends nothing: a list means cost_plus, otherwise the offer sheet.
+    sa.Column("pricing_tier", sa.String(12), nullable=False, default="offer"),
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
@@ -206,6 +209,11 @@ buyers = sa.Table(
     # 2026-09-09). Assigned here rather than in AOI because this is where the
     # real outside buyers live: AOI has never heard of Goodwill of Minnesota.
     sa.Column("price_list_id", sa.String(64)),
+    # Which of the three surfaces this buyer gets (JJ, 2026-09-10): cost_plus
+    # (their list is the price, submissions are firm orders), ev_base (our
+    # published closeout price is shown as the base; take it or offer something
+    # else) or offer (wholesale and a blank box, no suggestion of any kind).
+    sa.Column("pricing_tier", sa.String(12), nullable=False, default="offer"),
     # How often the new-arrivals digest reaches them (buyer feedback via JJ,
     # 2026-09-10): daily | weekly | monthly | never. Weekly is what everyone
     # had before there was a choice.
@@ -369,6 +377,25 @@ def clean_cadence(value: Any) -> str:
     return v if v in CADENCES else DEFAULT_CADENCE
 
 
+# The three ways a buyer is priced (JJ, 2026-09-10), by how much they want to
+# be told:
+#   cost_plus -- Goodwill: the price on their list IS the price, no counters, a
+#                submission is a firm order.  Needs a published price list.
+#   ev_base   -- Steins: the discounted EV price we publish is shown as the
+#                base; they take it at that number or type a different offer.
+#   offer     -- Bealls: wholesale and a blank box.  No suggestion, no base;
+#                they price it off what their own customer will pay.
+# Anything unrecognised is "offer", the surface everyone had first.
+PRICING_TIERS: tuple[str, ...] = ("offer", "ev_base", "cost_plus")
+DEFAULT_TIER = "offer"
+TIER_LABELS = {"offer": "Make an offer", "ev_base": "EV base price", "cost_plus": "Cost plus"}
+
+
+def clean_tier(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    return v if v in PRICING_TIERS else DEFAULT_TIER
+
+
 def clean_list_id(value: Any) -> str:
     """The slug, or "" for anything else -- and "" is the offer sheet, so junk
     can only ever cost a buyer their firm prices, never hand them someone
@@ -475,6 +502,10 @@ class Store:
                 "rep_name": str(it.get("rep_name") or ""), "house_account": bool(it.get("house_account")),
                 "accounts_json": json.dumps({str(k): str(v) for k, v in (it.get("accounts") or {}).items()}, sort_keys=True),
                 "price_list_id": clean_list_id(it.get("price_list_id")) or None,
+                # A tier the feed names wins; a list and no tier is cost_plus, as
+                # it was before tiers existed; neither is the offer sheet.
+                "pricing_tier": (clean_tier(it.get("pricing_tier")) if it.get("pricing_tier")
+                                 else ("cost_plus" if clean_list_id(it.get("price_list_id")) else "offer")),
                 "active": True, "updated_at": now,
             })
             for e in it.get("emails") or []:
@@ -748,18 +779,46 @@ class Store:
             return [dict(r) for r in conn.execute(stmt).mappings().all()]
 
     def set_buyer_status(self, buyer_id: int, status: str, *, by: str = "", buyer_class: str | None = None,
-                         price_list_id: str | None = None) -> None:
+                         price_list_id: str | None = None, pricing: str | None = None) -> None:
         now = now_iso()
         vals: dict[str, Any] = {"status": status, "updated_at": now}
         if status == "approved":
             vals.update(approved_at=now, approved_by=by)
         if buyer_class is not None:
             vals["buyer_class"] = _clean_class(buyer_class)
-        if price_list_id is not None:
+        if pricing is not None:
+            tier, lid = self._pricing_choice(pricing)
+            vals.update(pricing_tier=tier, price_list_id=lid or None)
+        elif price_list_id is not None:
             lid = clean_list_id(price_list_id)
-            vals["price_list_id"] = (lid if lid and self.price_list(lid) else None)
+            lid = lid if lid and self.price_list(lid) else ""
+            vals.update(price_list_id=lid or None, pricing_tier=("cost_plus" if lid else "offer"))
         with self.engine.begin() as conn:
             conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id)).values(**vals))
+
+    def _pricing_choice(self, choice: str) -> tuple[str, str]:
+        """One admin control covers all three tiers: ``offer``, ``ev_base``, or
+        ``list:<id>`` for cost-plus off that list.  A list we have never been
+        fed -- or a bare ``cost_plus`` with no list -- is the offer sheet: a
+        buyer can only ever fall back to bidding, never onto stale prices."""
+        c = str(choice or "").strip().lower()
+        if c.startswith("list:"):
+            lid = clean_list_id(c[5:])
+            if lid and self.price_list(lid):
+                return "cost_plus", lid
+            return "offer", ""
+        tier = clean_tier(c)
+        return ("offer" if tier == "cost_plus" else tier), ""
+
+    def set_buyer_pricing(self, buyer_id: int, choice: str) -> tuple[str, str]:
+        """Which surface this buyer gets (JJ, 2026-09-10) -- see ``_pricing_choice``
+        for the control's values.  An admin's call, like the class.  Returns
+        ``(tier, price_list_id)`` as actually stored."""
+        tier, lid = self._pricing_choice(choice)
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id))
+                         .values(pricing_tier=tier, price_list_id=lid or None, updated_at=now_iso()))
+        return tier, lid
 
     def set_buyer_class(self, buyer_id: int, buyer_class: str) -> str:
         """The governed field (brief S6): an admin's call, never the buyer's.
@@ -786,13 +845,7 @@ class Store:
         difference between a buyer bidding and a buyer being quoted.  A list id
         we have never been fed is stored as nothing, so a buyer can only ever
         land back on the offer sheet.  Returns what was actually stored."""
-        lid = clean_list_id(list_id)
-        if lid and not self.price_list(lid):
-            lid = ""
-        with self.engine.begin() as conn:
-            conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id))
-                         .values(price_list_id=lid or None, updated_at=now_iso()))
-        return lid
+        return self.set_buyer_pricing(buyer_id, f"list:{list_id}" if list_id else "offer")[1]
 
     def buyer_offer_counts(self) -> dict[str, int]:
         with self.engine.connect() as conn:
@@ -911,10 +964,21 @@ class Store:
             conds.append(price_list_items.c.price <= float(max_price))
         return sa.select(sa.literal(1)).where(*conds).exists()
 
+    # The EV base price a tier-2 buyer reads (JJ, 2026-09-10): the lower of the
+    # ladder step and what NetSuite publishes today, whichever are set.  None of
+    # the three prices is secret -- the website charges one of them -- but the
+    # offer sheet still never shows it.
+    EV_PRICE = sa.case(
+        (sa.and_(products.c.closeout_price > 0, products.c.published_price > 0),
+         sa.func.min(products.c.closeout_price, products.c.published_price)),
+        (products.c.closeout_price > 0, products.c.closeout_price),
+        (products.c.published_price > 0, products.c.published_price),
+        else_=products.c.wholesale)
+
     @classmethod
     def _product_filter(cls, *, brand=None, category=None, subcategory=None, q=None, companies=None,
                         min_units=None, min_cases=None, new_since=None, featured_only=False,
-                        max_price=None, price_list_id=None):
+                        max_price=None, price_list_id=None, ev_base=False):
         """Every word of ``q`` must appear somewhere in SKU, description, brand,
         category or subcategory; ``companies`` limits to the subsidiaries the
         buyer holds an account with (or the invite covers). ``brand`` /
@@ -928,6 +992,8 @@ class Store:
         conds = [products.c.active.is_(True), products.c.qty_available > 0]
         if price_list_id:
             conds.append(cls._priced_on(price_list_id, max_price))
+        elif max_price and ev_base:
+            conds.append(cls.EV_PRICE <= float(max_price))
         elif max_price:
             conds.append(products.c.wholesale <= float(max_price))
         if companies is not None:
@@ -956,12 +1022,12 @@ class Store:
                       min_cases: int | None = None, companies: Iterable[str] | None = None,
                       new_since: str | None = None, featured_only: bool = False,
                       max_price: float | None = None, price_list_id: str | None = None,
-                      limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+                      ev_base: bool = False, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         stmt = sa.select(products).where(*self._product_filter(brand=brand, category=category, subcategory=subcategory,
                                                                q=q, companies=companies, min_units=min_units,
                                                                min_cases=min_cases, new_since=new_since,
                                                                featured_only=featured_only, max_price=max_price,
-                                                               price_list_id=price_list_id))
+                                                               price_list_id=price_list_id, ev_base=ev_base))
         stmt = stmt.order_by(*self.SORTS.get(sort or "default", self.SORTS["default"])).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [_prod(r) for r in conn.execute(stmt).mappings().all()]
@@ -970,12 +1036,12 @@ class Store:
                        min_units: int | None = None, min_cases: int | None = None,
                        companies: Iterable[str] | None = None, new_since: str | None = None,
                        featured_only: bool = False, max_price: float | None = None,
-                       price_list_id: str | None = None) -> int:
+                       price_list_id: str | None = None, ev_base: bool = False) -> int:
         stmt = sa.select(sa.func.count()).select_from(products).where(
             *self._product_filter(brand=brand, category=category, subcategory=subcategory, q=q, companies=companies,
                                   min_units=min_units, min_cases=min_cases, new_since=new_since,
                                   featured_only=featured_only, max_price=max_price,
-                                  price_list_id=price_list_id))
+                                  price_list_id=price_list_id, ev_base=ev_base))
         with self.engine.connect() as conn:
             return int(conn.execute(stmt).scalar() or 0)
 
@@ -1291,6 +1357,7 @@ def _prod(r) -> dict[str, Any]:
     d["marked_down"] = bool(max(d["original_price"], d.get("wholesale") or 0.0)
                             > d["base_price"] * 1.005)
     d["msrp"] = msrp_price(d.get("wholesale") or 0.0)
+    d["ev_price"] = ev_price(d)
     # Depth in the unit a buyer thinks in: the smallest lot they can take.
     sp = int(d.get("inner_pack") or 0) or int(d.get("case_pack") or 0) or 1
     d["smallest_pack"] = sp
@@ -1318,6 +1385,18 @@ def _cust(row) -> dict[str, Any]:
     d["companies"] = [c for c in ALL_COMPANIES if c in accounts] or list(accounts)
     d["price_list_id"] = clean_list_id(d.get("price_list_id"))
     return d
+
+
+def ev_price(p: Mapping[str, Any]) -> float | None:
+    """The discounted EV price a tier-2 buyer is shown as the base (JJ,
+    2026-09-10): the lower of the ladder step AOI sends as ``closeout_price``
+    and what NetSuite publishes today, whichever are set -- the same "what we
+    already charge for it" that capped the old suggestion.  None when the feed
+    carries neither, and the line then behaves as a plain offer.  Mirrors
+    ``Store.EV_PRICE`` except that it does not fall back to wholesale."""
+    cands = [float(p.get(k) or 0.0) for k in ("closeout_price", "published_price")]
+    cands = [c for c in cands if c > 0]
+    return round(min(cands), 2) if cands else None
 
 
 def order_unit(p: Mapping[str, Any]) -> tuple[int, str]:
@@ -1350,12 +1429,14 @@ def _ensure_columns(eng: Engine) -> None:
                            "published_label": "VARCHAR(40) NOT NULL DEFAULT ''",
                            "published_disc_pct": "INTEGER NOT NULL DEFAULT 0"},
               "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'",
-                            "price_list_id": "VARCHAR(64)"},
+                            "price_list_id": "VARCHAR(64)",
+                            "pricing_tier": "VARCHAR(12) NOT NULL DEFAULT 'offer'"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
               "login_tokens": {"subject": "VARCHAR(200)"},
               "rounds": {"opened_at": "VARCHAR(32)"},
               "buyers": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'",
                          "price_list_id": "VARCHAR(64)",
+                         "pricing_tier": "VARCHAR(12) NOT NULL DEFAULT 'offer'",
                          "digest_cadence": "VARCHAR(10) NOT NULL DEFAULT 'weekly'"},
               "digest_runs": {"cadence": "VARCHAR(10) NOT NULL DEFAULT ''"},
               "invites": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'"}}
@@ -1365,3 +1446,8 @@ def _ensure_columns(eng: Engine) -> None:
             for name, ddl in cols.items():
                 if name not in have:
                     conn.execute(sa.text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                    if name == "pricing_tier":
+                        # Anyone on a list before tiers existed was on firm prices;
+                        # the column default alone would move them to bidding.
+                        conn.execute(sa.text(f"UPDATE {table} SET pricing_tier = 'cost_plus' "
+                                             f"WHERE price_list_id IS NOT NULL AND price_list_id <> ''"))

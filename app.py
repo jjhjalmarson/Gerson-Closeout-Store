@@ -38,39 +38,6 @@ def create_app(cfg: Config | None = None) -> Flask:
     app.register_blueprint(admin.bp)
     # MSRP off the published wholesale, for any page that shows a price.
     app.jinja_env.filters["msrp"] = msrp_price
-    # Ceiling on the suggested offer (see Config.suggest_max_disc): the buyer's
-    # margin sum runs off MSRP, and MSRP is itself derived from wholesale, so
-    # without a cap the suggestion is a fixed fraction of wholesale on every line.
-    app.jinja_env.globals["suggest_max_disc"] = cfg.suggest_max_disc
-
-    def _suggest_cap(p):
-        """The highest number the sheet will suggest for one item, or None.
-
-        Two ceilings, whichever is lower:
-
-        * the flat site-wide cap off wholesale (``suggest_max_disc``), and
-        * **the price we already charge for it publicly** — the ladder step AOI
-          sends as ``closeout_price``, which is what the EV pricing groups and
-          the website quote today (JJ, 2026-09-08).
-
-        The second one exists because the first alone anchored buyers above our
-        own published price: on a written-down SKU the sheet was saying "offer
-        $111.22" where the published price was $69.51 and we would have taken
-        $20. Nothing here is *shown* as a price — it is a ceiling on the buyer's
-        own arithmetic, and it never reaches the floor, which stays in AOI.
-        """
-        whsl = float(p.get("wholesale") or 0.0)
-        if whsl <= 0:
-            return None
-        caps = []
-        if 0.0 < cfg.suggest_max_disc < 1.0:
-            caps.append(whsl * (1.0 - cfg.suggest_max_disc))
-        published = float(p.get("closeout_price") or 0.0)
-        if 0.0 < published < whsl:
-            caps.append(published)
-        return round(min(caps), 2) if caps else None
-
-    app.jinja_env.globals["suggest_cap"] = _suggest_cap
     # Gallery urls are asked for at the size the slot needs; Salsify ships the
     # untouched master otherwise (13 MB for one 56px thumbnail).
     app.jinja_env.filters["sized"] = images.sized

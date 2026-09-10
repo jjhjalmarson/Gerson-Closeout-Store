@@ -45,12 +45,14 @@
     {# A firm-price account sees the price we will take and nothing to bid with;
        an item we have not quoted them is priced on request (2026-09-09). #}
     {% set firm = buyer.price_mode == 'firm' %}
+    {% set ev = buyer.pricing_tier == 'ev_base' %}
     {% if firm %}
     <p>{% if your_price %}<span class="price" style="font-size:1.4rem">${{ '%.2f'|format(your_price) }}</span> <span class="muted">your price</span>
       {% else %}<span class="price" style="font-size:1.4rem">Price on request</span> <span class="muted">— ask your Gerson contact for a quote on this item</span>{% endif %}
       {% if p.msrp %}<br><span class="price">${{ '%.2f'|format(p.msrp) }}</span> <span class="muted">MSRP</span>{% endif %}</p>
     {% else %}
     <p><span class="price" style="font-size:1.4rem">${{ '%.2f'|format(p.wholesale) }}</span> <span class="muted">original wholesale</span>
+      {% if ev and our_price %}<br><span class="price" style="font-size:1.4rem;color:var(--teal)">${{ '%.2f'|format(our_price) }}</span> <span class="muted">our closeout price{% if p.wholesale and our_price < p.wholesale %} · {{ ((1 - our_price / p.wholesale) * 100)|round|int }}% off wholesale{% endif %}</span>{% endif %}
       {% if p.msrp %}<br><span class="price">${{ '%.2f'|format(p.msrp) }}</span> <span class="muted">MSRP</span>{% endif %}</p>
     {% endif %}
     <p class="muted">{{ pack(p) }} · {{ p.qty_available }} available</p>
@@ -67,8 +69,9 @@
     <form method="post" action="{{ url_for('shop.offer_set') }}" class="bar">
       <input type="hidden" name="next" value="{{ url_for('shop.item', sku=p.sku) }}">
       <label>Quantity <input class="qty" type="number" name="qty[{{ p.sku }}]" value="{{ draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></label>
-      <label>Your offer / unit <input class="offer" type="number" name="price[{{ p.sku }}]" value="{{ draft_price }}" min="0" step="0.01" placeholder="$"></label>
+      <label>Your offer / unit <input class="offer" type="number" name="price[{{ p.sku }}]" value="{{ draft_price }}" min="0" step="0.01" {% if ev and our_price %}placeholder="{{ '%.2f'|format(our_price) }}" data-base="{{ '%.2f'|format(our_price) }}"{% else %}placeholder="$"{% endif %}></label>
       <button type="submit">Save to offer</button>
+      {% if ev and our_price %}<span class="muted">Leave the price blank to take it at ${{ '%.2f'|format(our_price) }}.</span>{% endif %}
       {% if draft_qty %}<span class="muted">On your offer: {{ draft_qty }} at ${{ draft_price }}</span>{% endif %}
     </form>
     {% endif %}

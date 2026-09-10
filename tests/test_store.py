@@ -485,18 +485,19 @@ class OfferTest(StoreTestCase):
         # and nothing about our side of it ever appears on a buyer page
         self.assertNotIn("cost", page.lower().replace("closeout", ""))
 
-    def test_the_suggested_offer_is_capped_to_a_closeout_shaped_number(self):
-        """MSRP is msrp_price(wholesale), so the buyer's backwards margin sum is a
-        fixed multiple of wholesale on every line -- at 50% margin / 25% freight it
-        lands at 94% of wholesale, which is not a closeout. The sheet ships the
-        wholesale anchor and a flat cap so the suggestion can never sit there."""
+    def test_nothing_is_suggested_on_the_offer_sheet(self):
+        """Tier 3 (JJ, 2026-09-10): wholesale, MSRP and a blank box. The buyer
+        prices off their own customer; the sheet offers no number of ours and no
+        arithmetic that lands on one."""
         html = self.client.get("/").get_data(as_text=True)
-        self.assertIn('data-wholesale="25.00"', html)         # L1, beside data-msrp
-        # the cap reaches the page as a number, not an unrendered Jinja expression
-        self.assertNotIn("suggest_max_disc", html)
-        self.assertIn("const MAX_DISC = Number('0.2')", html)
-        # uncapped, 50/25 would suggest 0.9375 x wholesale; the cap holds it at 0.80
-        self.assertLess(0.80 * 25.00, 0.9375 * 25.00)
+        self.assertIn('data-wholesale="25.00"', html)                    # the anchor, for their retail math
+        self.assertIn('placeholder="$"', html)                            # and an empty box
+        for gone in ("suggest_max_disc", "MAX_DISC", "fillFromMargin", 'class="suggest"', "suggestedFor",
+                     "data-suggest-max", "Our price", "data-base"):
+            self.assertNotIn(gone, html)
+        self.assertNotIn("cost", html.lower().replace("closeout", ""))
+        for hidden in ("floor", "avg_cost", "base_price", "published_price", "closeout_price", "ev_price"):
+            self.assertNotIn(hidden, html.lower())
 
     def test_behaviour_is_recorded_and_pulled_with_a_cursor(self):
         """The point of the events table is what never becomes an offer: a SKU
@@ -893,46 +894,6 @@ class PublishedPriceIngestTest(StoreTestCase):
         self.assertFalse(p["marked_down"])
 
 
-class SuggestedPriceTest(StoreTestCase):
-    """The buyer's own margin sum, run backwards, so nobody faces 500 blank boxes:
-    suggested = MSRP x (1 - target margin) x (1 - freight factor), the exact
-    inverse of the "your retail" column that was already there.  It is arithmetic
-    on numbers already on the page — no cost, no floor, no ladder step — and both
-    of the buyer's numbers stay in their browser."""
-
-    def setUp(self):
-        super().setUp()
-        self.seed()
-        self.login()
-
-    def test_the_sheet_carries_a_slot_and_a_fill_control(self):
-        html = self.client.get("/").get_data(as_text=True)
-        self.assertIn('class="suggest"', html)
-        self.assertIn('id="fillFromMargin"', html)
-        # It must not submit the offer form by accident.
-        self.assertIn('<button type="button" id="fillFromMargin"', html)
-
-    def test_the_suggestion_is_computed_in_the_browser_not_served(self):
-        # No price is rendered into the slot server-side: it depends on two
-        # numbers we never receive.
-        html = self.client.get("/").get_data(as_text=True)
-        self.assertIn('<span class="suggest"></span>', html)
-        self.assertIn("suggestedFor", html)
-
-    def test_a_fixed_price_page_offers_no_suggestion(self):
-        # The round page prices the line itself; there is nothing to suggest, and
-        # the shared script no-ops because the page has no .suggest slot.
-        page = self.client.get("/offer").get_data(as_text=True)
-        self.assertNotIn('class="suggest"', page)
-        self.assertNotIn('id="fillFromMargin"', page)
-
-    def test_the_sheet_still_leaks_nothing(self):
-        html = self.client.get("/").get_data(as_text=True)
-        self.assertNotIn("cost", html.lower().replace("closeout", ""))
-        for hidden in ("floor", "avg_cost", "base_price", "published_price"):
-            self.assertNotIn(hidden, html.lower())
-
-
 class FeaturedTest(StoreTestCase):
     """The hand-picked SKUs AOI wants the sheet to lead with (JJ, 2026-09-08).
 
@@ -988,54 +949,6 @@ class FeaturedTest(StoreTestCase):
             html = self.client.get(page).get_data(as_text=True).lower()
             for hidden in ("written down", "write-down", "below cost", "featured_rank"):
                 self.assertNotIn(hidden, html)
-
-
-class SuggestCapTest(StoreTestCase):
-    """The suggestion never exceeds what we already charge publicly (JJ, 2026-09-08).
-
-    The flat cap alone was one number for the whole sheet, and on a written-down
-    SKU it anchored the buyer far above our own published price."""
-
-    def setUp(self):
-        super().setUp()
-        self.seed()
-        self.use_invite("ross-xyz")
-
-    def _caps(self, html):
-        import re
-        return dict(zip(re.findall(r'name="qty\[(\w+)\]"', html),
-                        re.findall(r'data-suggest-max="([\d.]+)"', html)))
-
-    def test_the_ceiling_is_the_lower_of_the_flat_cap_and_our_published_price(self):
-        caps = self._caps(self.client.get("/").get_data(as_text=True))
-        # L1: $25 wholesale, published $20. Flat cap 20% off = $20.00; equal, so $20.00.
-        self.assertEqual(caps["L1"], "20.00")
-        # T2: $100 wholesale, published $30. Flat cap would be $80 — the published
-        # price is far lower and governs.
-        self.assertEqual(caps["T2"], "30.00")
-
-    def test_an_unladdered_row_keeps_the_flat_cap(self):
-        # closeout_price == wholesale is "no discount published": only the flat cap applies.
-        flat = {**CATALOG, "items": [{**CATALOG["items"][1], "closeout_price": 100.0}]}
-        self.ingest("catalog", flat)
-        self.assertEqual(self._caps(self.client.get("/").get_data(as_text=True))["T2"], "80.00")
-
-    def test_the_ceiling_is_never_the_floor_and_never_shown_as_a_price(self):
-        html = self.client.get("/").get_data(as_text=True)
-        self.assertNotIn("$30.00", html)          # still not rendered as a price
-        for hidden in ("floor", "closeout_price", "featured_floor"):
-            self.assertNotIn(hidden, html.lower())
-
-    def test_the_ceiling_is_computed_where_the_config_lives(self):
-        from app import create_app
-        app = create_app(_cfg(suggest_max_disc=0.5))
-        cap = app.jinja_env.globals["suggest_cap"]
-        self.assertEqual(cap({"wholesale": 100.0, "closeout_price": 30.0}), 30.0)   # published wins
-        self.assertEqual(cap({"wholesale": 100.0, "closeout_price": 0.0}), 50.0)    # flat cap
-        self.assertEqual(cap({"wholesale": 100.0, "closeout_price": 100.0}), 50.0)  # no markdown
-        self.assertIsNone(cap({"wholesale": 0.0, "closeout_price": 30.0}))          # no anchor
-        off = create_app(_cfg(suggest_max_disc=1.0)).jinja_env.globals["suggest_cap"]
-        self.assertEqual(off({"wholesale": 100.0, "closeout_price": 30.0}), 30.0)   # suppressed in JS
 
 
 class GalleryTest(StoreTestCase):
@@ -1399,13 +1312,14 @@ class GoodwillBuyerTest(StoreTestCase):
         self.assertIn("$25.00", html); self.assertIn('name="price[L1]"', html)      # bidding, to start with
         # the dropdown is on the buyers table, next to their class
         admin = self.client.get("/admin/").get_data(as_text=True)
-        self.assertIn("Price list", admin); self.assertIn("Offer sheet", admin)
-        self.assertIn('<option value="cost_plus_5" >Landed cost + 5%</option>', admin)
-        r = self.client.post(f"/admin/buyers/{b['id']}/price_list",
-                             data={"price_list_id": "cost_plus_5"}, follow_redirects=True)
+        self.assertIn("Pricing", admin); self.assertIn("Make an offer", admin); self.assertIn("EV base price", admin)
+        self.assertIn('<option value="list:cost_plus_5" >Cost plus: Landed cost + 5%</option>', admin)
+        r = self.client.post(f"/admin/buyers/{b['id']}/pricing",
+                             data={"pricing": "list:cost_plus_5"}, follow_redirects=True)
         self.assertIn("Landed cost + 5%", r.get_data(as_text=True))
-        self.assertEqual(self.store.buyer(b["id"])["price_list_id"], "cost_plus_5")
-        self.assertIn('<option value="cost_plus_5" selected>Landed cost + 5%</option>',
+        row = self.store.buyer(b["id"])
+        self.assertEqual((row["pricing_tier"], row["price_list_id"]), ("cost_plus", "cost_plus_5"))
+        self.assertIn('<option value="list:cost_plus_5" selected>Cost plus: Landed cost + 5%</option>',
                       self.client.get("/admin/").get_data(as_text=True))
         # and that is all it takes: no wholesale, no offer box, our price
         html = self.buyer.get("/").get_data(as_text=True)
@@ -1423,21 +1337,166 @@ class GoodwillBuyerTest(StoreTestCase):
     def test_a_list_can_be_taken_away_again_and_junk_never_assigns_one(self):
         b = self._approve()
         self.store.set_buyer_price_list(b["id"], "cost_plus_5")
-        r = self.client.post(f"/admin/buyers/{b['id']}/price_list", data={"price_list_id": ""}, follow_redirects=True)
-        self.assertIn("back on the offer sheet", r.get_data(as_text=True))
-        self.assertIsNone(self.store.buyer(b["id"])["price_list_id"])
+        self.assertEqual(self.store.buyer(b["id"])["pricing_tier"], "cost_plus")       # the old setter sets the tier too
+        r = self.client.post(f"/admin/buyers/{b['id']}/pricing", data={"pricing": "offer"}, follow_redirects=True)
+        self.assertIn("on the offer sheet", r.get_data(as_text=True))
+        row = self.store.buyer(b["id"])
+        self.assertEqual((row["pricing_tier"], row["price_list_id"]), ("offer", None))
         self.assertIn('name="price[L1]"', self.buyer.get("/").get_data(as_text=True))
-        # a list we have never been fed is not a list
+        # a list we have never been fed is not a list, and cost plus without a list is the offer sheet
         self.assertEqual(self.store.set_buyer_price_list(b["id"], "made_up"), "")
-        self.assertEqual(self.app.test_client().post(f"/admin/buyers/{b['id']}/price_list",
-                                                     data={"price_list_id": "cost_plus_5"}).status_code, 404)
+        self.assertEqual(self.store.set_buyer_pricing(b["id"], "list:made_up"), ("offer", ""))
+        self.assertEqual(self.store.set_buyer_pricing(b["id"], "cost_plus"), ("offer", ""))
+        self.assertEqual(self.app.test_client().post(f"/admin/buyers/{b['id']}/pricing",
+                                                     data={"pricing": "list:cost_plus_5"}).status_code, 404)
         self.assertIsNone(self.store.buyer(b["id"])["price_list_id"])   # not an admin, not assigned
 
     def test_the_list_can_be_set_on_the_way_in_beside_approve(self):
-        b = self._approve(price_list_id="cost_plus_5", buyer_class="liquidator")
+        b = self._approve(pricing="list:cost_plus_5", buyer_class="liquidator")
         row = self.store.buyer(b["id"])
-        self.assertEqual((row["price_list_id"], row["buyer_class"]), ("cost_plus_5", "liquidator"))
+        self.assertEqual((row["pricing_tier"], row["price_list_id"], row["buyer_class"]),
+                         ("cost_plus", "cost_plus_5", "liquidator"))
         self.assertIn("Your price", self.buyer.get("/").get_data(as_text=True))
+
+
+EV_CUSTOMERS = {**CUSTOMERS, "items": [{**CUSTOMERS["items"][0], "pricing_tier": "ev_base"}]}
+
+
+class EvBaseTierTest(StoreTestCase):
+    """Tier 2 (JJ, 2026-09-10, Steins): our published closeout price is the base
+    of every line. A quantity alone takes it at that number; a typed price is
+    the buyer's offer. Wholesale stays beside it, nothing is suggested beyond
+    the base, and the payload says which lines are at our price."""
+
+    def setUp(self):
+        super().setUp()
+        self.ingest("catalog", CATALOG)
+        self.ingest("customers", EV_CUSTOMERS)
+        self.login()
+
+    def test_the_feed_names_the_tier_and_the_sheet_shows_our_price(self):
+        self.assertEqual(self.store.customer("26003")["pricing_tier"], "ev_base")
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Our price", html)
+        self.assertIn("$25.00", html); self.assertIn("<b>$20.00</b>", html); self.assertIn("20% off", html)    # L1
+        self.assertIn("$100.00", html); self.assertIn("<b>$30.00</b>", html); self.assertIn("70% off", html)   # T2
+        self.assertIn('placeholder="20.00" data-base="20.00"', html)
+        self.assertIn("Leave the price blank to take a line at our price", html)
+        for gone in ("fillFromMargin", 'class="suggest"', "MAX_DISC", "Your price", "Price on request"):
+            self.assertNotIn(gone, html)
+        for hidden in ("floor", "avg_cost", "closeout_price", "published_price", "ev_price", "next_step"):
+            self.assertNotIn(hidden, html.lower())
+        item = self.client.get("/item/T2").get_data(as_text=True)
+        self.assertIn("$30.00", item); self.assertIn("our closeout price", item); self.assertIn("70% off wholesale", item)
+        self.assertIn("Leave the price blank to take it at $30.00", item)
+
+    def test_a_blank_price_takes_our_price_and_a_typed_one_is_an_offer(self):
+        r = self.client.post("/offer/line", json={"sku": "L1", "qty": "12", "price": ""}).get_json()
+        self.assertEqual(r["line"], {"qty": 12, "price": 20.0})
+        r = self.client.post("/offer/line", json={"sku": "T2", "qty": "8", "price": "25"}).get_json()
+        self.assertEqual(r["line"], {"qty": 8, "price": 25.0})
+        # the no-JavaScript form does the same
+        self.client.post("/offer/set", data={"qty[L1]": "18", "price[L1]": ""})
+        self.assertEqual(self.store.draft("cust:26003")["L1"], {"qty": 18, "price": 20.0})
+        # a blank price with no quantity is still no line
+        self.client.post("/offer/line", json={"sku": "L1", "qty": "0", "price": ""})
+        self.assertNotIn("L1", self.store.draft("cust:26003"))
+        self.client.post("/offer/line", json={"sku": "L1", "qty": "12", "price": ""})
+        html = self.client.get("/offer").get_data(as_text=True)
+        self.assertIn("Our price", html)
+        self.assertEqual(html.count('font-size:.78rem">at our price</span>'), 1)
+        self.assertEqual(html.count('font-size:.78rem">your offer</span>'), 1)
+        self.assertIn("Lines at our price are confirmed as they stand", html)
+        rows = self.client.get("/offer.csv").get_data(as_text=True).strip().splitlines()
+        self.assertIn("wholesale,our_price,qty", rows[0])
+        self.assertIn("L1,Lantern", rows[1]); self.assertIn(",25.0,20.0,12,20.0,", rows[1])
+
+    def test_the_payload_says_which_lines_took_our_price(self):
+        self.client.post("/offer/line", json={"sku": "L1", "qty": "12", "price": ""})
+        self.client.post("/offer/line", json={"sku": "T2", "qty": "8", "price": "25"})
+        r = self.client.post("/offer/submit", data={"company": "Steins", "email": "buyer@steins.test"})
+        self.assertEqual(r.status_code, 200)
+        page = r.get_data(as_text=True)
+        self.assertIn("1 of 2 lines is at our price", page)
+        p = self.store.pull_outbox()[0]["payload"]
+        self.assertEqual((p["pricing_tier"], p["price_mode"], p["at_base_lines"]), ("ev_base", "offer", 1))
+        self.assertNotIn("price_list_id", p)
+        by = {l["sku"]: l for l in p["lines"]}
+        self.assertEqual((by["L1"]["offer_price"], by["L1"]["our_price"], by["L1"]["at_base"]), (20.0, 20.0, True))
+        self.assertEqual((by["T2"]["offer_price"], by["T2"]["our_price"], by["T2"]["at_base"]), (25.0, 30.0, False))
+        self.assertEqual(p["total"], 440.0)                                            # 12 x 20 + 8 x 25
+        buyer_mail = self.sent[-1]
+        self.assertIn("We have your offer", buyer_mail["subject"])
+        self.assertIn("Our price", buyer_mail["html"]); self.assertEqual(buyer_mail["html"].count("at our price"), 1)
+        self.assertIn("Lines at our price: 1 of 2", buyer_mail["body"])
+        self.assertIn(b"our_price", buyer_mail["attachments"][0][1])
+        ev = [e for e in self.store.events_since(0) if e["kind"] == "offer_submitted"][-1]
+        self.assertEqual((ev["payload"]["pricing_tier"], ev["payload"]["at_base_lines"]), ("ev_base", 1))
+
+    def test_under_is_measured_on_our_price(self):
+        # L1 is $25 wholesale / $20 ours; T2 is $100 wholesale / $30 ours.
+        html = self.client.get("/?max_price=50").get_data(as_text=True)
+        self.assertIn("Lantern", html); self.assertIn("Tree", html)
+        html = self.client.get("/?max_price=25").get_data(as_text=True)
+        self.assertIn("Lantern", html); self.assertNotIn("Tree", html)
+        # an offer-tier buyer reads the same filter on wholesale
+        self.client.post("/logout")
+        self.ingest("customers", CUSTOMERS)
+        with self.store.engine.begin() as conn:
+            conn.execute(sa.delete(D.login_tokens))
+        self.login()
+        html = self.client.get("/?max_price=50").get_data(as_text=True)
+        self.assertIn("Lantern", html); self.assertNotIn("Tree", html)
+        self.assertNotIn("Our price", html)
+
+    def test_a_row_the_feed_has_not_priced_is_a_plain_offer_line(self):
+        unpriced = {**CATALOG, "items": [{**CATALOG["items"][1], "closeout_price": 0, "published_price": 0}]}
+        self.ingest("catalog", unpriced)
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn("make an offer", html); self.assertNotIn("data-base", html)
+        r = self.client.post("/offer/line", json={"sku": "T2", "qty": "8", "price": ""}).get_json()
+        self.assertIsNone(r["line"])                                                     # nothing to take it at
+        r = self.client.post("/offer/line", json={"sku": "T2", "qty": "8", "price": "22"}).get_json()
+        self.assertEqual(r["line"], {"qty": 8, "price": 22.0})
+
+    def test_the_admin_control_covers_all_three_tiers(self):
+        self.ingest("prices", PRICES)
+        with self.store.engine.begin() as conn:
+            conn.execute(D.buyers.insert().values(company="Steins", contact="Pat", email="pat@steins.test", phone="",
+                                                  notes="", status="approved", buyer_class="regional",
+                                                  created_at=D.now_iso(), updated_at=D.now_iso()))
+        b = self.store.buyer_for_email("pat@steins.test")
+        self.assertEqual(b["pricing_tier"], "offer")
+        admin = self.app.test_client()
+        admin.post("/login", data={"email": "admin@gerson.test"})
+        import re as _re
+        admin.get(_re.search(r"http://store\.test(/[^\s]+)", self.sent[-1]["body"]).group(1))
+        r = admin.post(f"/admin/buyers/{b['id']}/pricing", data={"pricing": "ev_base"}, follow_redirects=True)
+        self.assertIn("our closeout price as the base", r.get_data(as_text=True))
+        row = self.store.buyer(b["id"])
+        self.assertEqual((row["pricing_tier"], row["price_list_id"]), ("ev_base", None))
+        self.assertIn('<option value="ev_base" selected>', admin.get("/admin/").get_data(as_text=True))
+        admin.post(f"/admin/buyers/{b['id']}/pricing", data={"pricing": "list:cost_plus_5"})
+        row = self.store.buyer(b["id"])
+        self.assertEqual((row["pricing_tier"], row["price_list_id"]), ("cost_plus", "cost_plus_5"))
+        admin.post(f"/admin/buyers/{b['id']}/pricing", data={"pricing": "list:nope"})
+        self.assertEqual(self.store.buyer(b["id"])["pricing_tier"], "offer")            # never onto stale prices
+        self.assertEqual(admin.post("/admin/buyers/999/pricing", data={"pricing": "ev_base"}).status_code, 404)
+        self.assertEqual([D.clean_tier(v) for v in ("EV_BASE", "cost_plus", "", None, "vip")],
+                         ["ev_base", "cost_plus", "offer", "offer", "offer"])
+
+    def test_a_deactivated_list_drops_a_cost_plus_account_to_the_offer_sheet(self):
+        self.client.post("/logout")
+        self.ingest("prices", PRICES)
+        self.ingest("customers", LIST_CUSTOMERS)                     # a list and no tier: cost plus, as before
+        self.assertEqual(self.store.customer("26003")["pricing_tier"], "cost_plus")
+        with self.store.engine.begin() as conn:
+            conn.execute(sa.delete(D.login_tokens))
+        self.login()
+        self.assertIn("Your price", self.client.get("/").get_data(as_text=True))
+        self.ingest("prices", {**PRICES, "count": 0, "items": []})  # AOI withdraws every list
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("Your price", html); self.assertIn('name="price[L1]"', html); self.assertNotIn("Our price", html)
 
 
 class SizedUrlTest(unittest.TestCase):

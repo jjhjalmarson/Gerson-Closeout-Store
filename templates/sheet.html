@@ -1,15 +1,22 @@
 {% extends "base.html" %}
 {% from "_macros.html" import pack %}
-{# A firm-price account (JJ / Goodwill, 2026-09-09) is shown the price we will
-   take, per item, and nothing to bid with: no wholesale, no offer box, no
-   suggestion. Everyone else gets the sheet exactly as before. #}
+{# Three ways a buyer is priced (JJ, 2026-09-10):
+     cost_plus ("firm") -- the price on their list is the price: no wholesale,
+                no offer box, a submission is an order (Goodwill, 2026-09-09);
+     ev_base  -- our published closeout price is shown as the base beside
+                wholesale; a quantity alone takes it at that price, a typed
+                price is their offer (Steins);
+     offer    -- wholesale and a blank box, no suggestion of any kind (Bealls). #}
 {% set firm = buyer.price_mode == 'firm' %}
+{% set ev = buyer.pricing_tier == 'ev_base' %}
 {% block body %}
 <h1>{{ 'Your closeout price list' if firm else 'Closeout offer sheet' }}</h1>
 {% if featured_total %}<p class="newline featured"><a href="{{ url_for('shop.home', featured=1) }}"><b>{{ featured_total }} featured</b> item{{ '' if featured_total == 1 else 's' }} — our sharpest prices{% if not firm %}, and we will look hard at any offer on them{% endif %}</a>{% if featured_flag %} <span class="muted">· showing just those</span>{% endif %}</p>{% endif %}
 {% if new_total %}<p class="newline"><a href="{{ url_for('shop.home', new=1, sort='newest') }}"><b>{{ new_total }} new</b> item{{ '' if new_total == 1 else 's' }} added to the sheet in the last {{ new_days }} days</a>{% if new_flag %} <span class="muted">· showing just those</span>{% endif %}</p>{% endif %}
 {% if firm %}
 <p class="muted">These are your prices — the final unit price on every item we have quoted you, with no back-and-forth. Enter a quantity and your line saves as you type; review and send when you are done, and we confirm and ship. Quantities snap to whole packs.</p>
+{% elif ev %}
+<p class="muted">Our closeout price is shown beside the original wholesale on every item. Enter a quantity to take it at our price, or type a different unit price to make an offer — lines save as you type — then review and submit when you are done. Our team confirms lines at our price and replies by email on the rest. Quantities snap to whole packs.</p>
 {% else %}
 <p class="muted">Original wholesale and pack sizes are shown for every item. Enter a quantity and the unit price you are offering — lines save as you type — then review and submit when you are done. Our team replies by email with an acceptance or a counter. Quantities snap to whole packs.</p>
 {% endif %}
@@ -78,16 +85,15 @@
   {% if not firm %}
   <label class="muted">Your target margin <input id="targetMargin" type="number" min="0" max="95" step="1" style="width:4.5rem;text-align:right" placeholder="%">%</label>
   <label class="muted">Freight factor <input id="freightFactor" type="number" min="0" max="50" step="0.5" style="width:4.5rem;text-align:right" placeholder="%">%</label>
-  <button type="button" id="fillFromMargin" class="sec" hidden>Fill this page</button>
   {% endif %}
   <span class="muted" id="autosaveMsg" style="flex:1 1 100%">{% if firm %}Lines save automatically as you type; they stay on your order request until you send or clear it.{% else %}Lines save automatically as you type; they stay on your offer until you submit or clear it.
-    Set your margin and freight above and every line shows the price that would hit it, and what you would retail at the price you are offering.{% endif %}</span>
+    {% if ev %}Leave the price blank to take a line at our price.{% endif %} Set your margin and freight above and every line shows what you would retail at the price you are offering.{% endif %}</span>
 </div>
 <table>
   {% if firm %}
   <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Your price</th><th class="right">MSRP</th><th class="right">Qty</th></tr></thead>
   {% else %}
-  <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">MSRP</th><th class="right">Qty</th><th class="right">Your offer / unit</th><th class="right">Your retail</th></tr></thead>
+  <thead><tr><th></th><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th>{% if ev %}<th class="right">Our price</th>{% endif %}<th class="right">MSRP</th><th class="right">Qty</th><th class="right">Your offer / unit</th><th class="right">Your retail</th></tr></thead>
   {% endif %}
   <tbody>
   {% for p in items %}
@@ -102,14 +108,17 @@
     <td class="right">${{ '%.2f'|format(p.msrp) }}</td>
     <td class="right"><input class="qty" type="number" name="qty[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></td>
     {% else %}
-    {# data-suggest-max: the highest the sheet will suggest for this line (app.suggest_cap). #}
-    <td class="right price" data-wholesale="{{ '%.2f'|format(p.wholesale) }}"
-        {% set cap = suggest_cap(p) %}{% if cap %}data-suggest-max="{{ '%.2f'|format(cap) }}"{% endif %}>${{ '%.2f'|format(p.wholesale) }}</td>
+    <td class="right price" data-wholesale="{{ '%.2f'|format(p.wholesale) }}">${{ '%.2f'|format(p.wholesale) }}</td>
+    {% if ev %}
+    {# Tier 2's base: the price we publish, and how far under wholesale it sits.
+       A row the feed has not priced is a plain offer line. #}
+    <td class="right ours">{% if p.our_price %}<b>${{ '%.2f'|format(p.our_price) }}</b>{% if p.wholesale and p.our_price < p.wholesale %}<br><span class="muted" style="font-size:.78rem">{{ ((1 - p.our_price / p.wholesale) * 100)|round|int }}% off</span>{% endif %}{% else %}<span class="muted" style="font-size:.78rem">make an offer</span>{% endif %}</td>
+    {% endif %}
     <td class="right" data-msrp="{{ '%.2f'|format(p.msrp) }}">${{ '%.2f'|format(p.msrp) }}</td>
     <td class="right"><input class="qty" type="number" name="qty[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_qty }}" min="0" step="{{ p.case_pack }}" placeholder="0"></td>
     <td class="right"><span class="offercell">
-      <input class="offer" type="number" name="price[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_price }}" min="0" step="0.01" placeholder="$"><span class="saved" data-saved="{{ p.sku }}"></span>
-      <span class="suggest"></span></span></td>
+      <input class="offer" type="number" name="price[{{ p.sku }}]" data-sku="{{ p.sku }}" value="{{ p.draft_price }}" min="0" step="0.01"
+             {% if ev and p.our_price %}placeholder="{{ '%.2f'|format(p.our_price) }}" data-base="{{ '%.2f'|format(p.our_price) }}" title="Leave blank to take it at our price, or type your own"{% else %}placeholder="$"{% endif %}><span class="saved" data-saved="{{ p.sku }}"></span></span></td>
     <td class="right retail"></td>
     {% endif %}
   </tr>

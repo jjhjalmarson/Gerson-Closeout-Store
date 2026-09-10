@@ -3,6 +3,7 @@
 {# A firm-price account is not making an offer: these are our prices, and this
    page is the order they are asking us to fill (JJ, 2026-09-09). #}
 {% set firm = buyer.price_mode == 'firm' %}
+{% set ev = buyer.pricing_tier == 'ev_base' %}
 {% block title %}{{ 'Review order request' if firm else 'Review offer' }} · Gerson Closeout Offers{% endblock %}
 {% block body %}
 <h1>{{ 'Your order request' if firm else 'Your offer' }}</h1>
@@ -30,23 +31,25 @@
       <td class="right"><b>{{ lines|sum(attribute='qty') }}</b></td>
       <td class="right"><b>${{ '%.2f'|format(total) }}</b></td></tr>
   {% else %}
-  <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th><th class="right">MSRP</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Your retail</th><th class="right">Extended</th></tr></thead>
+  <thead><tr><th>Item</th><th>Pack</th><th class="right">Available</th><th class="right">Wholesale</th>{% if ev %}<th class="right">Our price</th>{% endif %}<th class="right">MSRP</th><th class="right">Qty</th><th class="right">Offer / unit</th><th class="right">% of wholesale</th><th class="right">Your retail</th><th class="right">Extended</th></tr></thead>
   {% for l in lines %}
   <tr>
     <td><b>{{ l.description }}</b><br><span class="muted">{{ l.sku }} · {{ l.brand }}{% if l.category %} · {{ l.category }}{% endif %}</span></td>
     <td class="muted">{{ pack(l) }}</td>
     <td class="right">{{ l.qty_available }}</td>
     <td class="right">${{ '%.2f'|format(l.wholesale) }}</td>
+    {% if ev %}<td class="right">{% if l.our_price %}${{ '%.2f'|format(l.our_price) }}{% endif %}</td>{% endif %}
     {% set msrp = l.wholesale|msrp %}
     <td class="right" data-msrp="{{ '%.2f'|format(msrp) }}">{% if msrp %}${{ '%.2f'|format(msrp) }}{% endif %}</td>
     <td class="right"><input class="qty" type="number" name="qty[{{ l.sku }}]" value="{{ l.qty }}" min="0" step="{{ l.case_pack }}"></td>
-    <td class="right"><input class="offer" type="number" name="price[{{ l.sku }}]" value="{{ '%.2f'|format(l.offer_price) }}" min="0" step="0.01"></td>
+    <td class="right"><input class="offer" type="number" name="price[{{ l.sku }}]" value="{{ '%.2f'|format(l.offer_price) }}" min="0" step="0.01">
+      {% if ev %}<br><span class="muted" style="font-size:.78rem">{% if l.at_base %}at our price{% elif l.our_price %}your offer{% endif %}</span>{% endif %}</td>
     <td class="right muted">{% if l.pct_of_wholesale %}{{ (l.pct_of_wholesale * 100)|round|int }}%{% endif %}</td>
     <td class="right retail"></td>
     <td class="right">${{ '%.2f'|format(l.extended) }}</td>
   </tr>
   {% endfor %}
-  <tr><td colspan="5" class="right"><b>Total</b> <span class="muted">· {{ lines|length }} line{{ 's' if lines|length != 1 }}</span></td>
+  <tr><td colspan="{{ 6 if ev else 5 }}" class="right"><b>Total</b> <span class="muted">· {{ lines|length }} line{{ 's' if lines|length != 1 }}</span></td>
       <td class="right"><b>{{ lines|sum(attribute='qty') }}</b></td><td></td>
       <td class="right muted">{% if wholesale_total > 0 %}{{ ((total / wholesale_total) * 100)|round|int }}% of ${{ '%.2f'|format(wholesale_total) }}{% endif %}</td>
       <td class="right retail-total"></td>
@@ -71,6 +74,8 @@
 <h2>{{ 'Send it' if firm else 'Submit' }}</h2>
 {% if firm %}
 <p class="muted">These are the prices we quoted you: we confirm them and ship at once. The same order minimum applies as on any closeout order.</p>
+{% elif ev %}
+<p class="muted">Lines at our price are confirmed as they stand; we reply to the email below on any line you priced differently, with an acceptance or a counter. Nothing ships and nothing is charged until both sides agree.</p>
 {% else %}
 <p class="muted">We reply to the email below with an acceptance or a counter. Nothing ships and nothing is charged until both sides agree.</p>
 {% endif %}
