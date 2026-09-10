@@ -19,7 +19,7 @@ from flask import Blueprint, abort, current_app, flash, redirect, render_templat
 from werkzeug.security import generate_password_hash
 
 from . import digest, mail
-from .db import BUYER_CLASSES, CADENCES
+from .db import BUYER_CLASSES, CADENCES, TIER_LABELS
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -183,6 +183,7 @@ def set_status(buyer_id: int):
         abort(404)
     ctx.store.set_buyer_status(buyer_id, status, by=current_admin(),
                                buyer_class=request.form.get("buyer_class") or None,
+                               pricing=request.form.get("pricing") if "pricing" in request.form else None,
                                price_list_id=request.form.get("price_list_id") if "price_list_id" in request.form else None)
     if status == "approved":
         token = ctx.store.create_login_token(b["email"], "", APPROVAL_LINK_MINUTES, subject=f"buyer:{buyer_id}")
@@ -227,23 +228,29 @@ def set_cadence(buyer_id: int):
     return redirect(url_for("admin.home"))
 
 
-@bp.post("/buyers/<int:buyer_id>/price_list")
+@bp.post("/buyers/<int:buyer_id>/pricing")
 @admin_required
-def set_price_list(buyer_id: int):
-    """Which price list this buyer buys off (JJ / Goodwill, 2026-09-09).
+def set_pricing(buyer_id: int):
+    """Which of the three surfaces this buyer gets (JJ, 2026-09-10).
 
-    Blank is the offer sheet everyone has: wholesale and a blank box. A list is
-    one AOI publishes, and puts "Your price" on every item on it with nothing to
-    bid with -- what Jennifer at Goodwill asked for. The label is ours; she only
-    ever sees the number."""
+    ``offer`` is wholesale and a blank box, nothing suggested (Bealls).
+    ``ev_base`` shows our published closeout price as the base of every line:
+    a quantity alone takes it, a typed price is their offer (Steins).
+    ``list:<id>`` is cost plus off a list AOI publishes: "Your price" on every
+    item with nothing to bid with, and a submission is an order (Goodwill).
+    The label is ours; a buyer only ever sees the number."""
     ctx = _ctx()
     b = ctx.store.buyer(buyer_id)
     if not b:
         abort(404)
-    lid = ctx.store.set_buyer_price_list(buyer_id, request.form.get("price_list_id") or "")
-    if lid:
+    tier, lid = ctx.store.set_buyer_pricing(buyer_id, request.form.get("pricing") or "")
+    if tier == "cost_plus":
         label = next((p["label"] for p in ctx.store.price_lists() if p["list_id"] == lid), lid)
-        flash(f"{b['company']} now buys off {label or lid}: their sheet shows your price, not wholesale.")
+        flash(f"{b['company']} now buys off {label or lid}: their sheet shows your price, not wholesale, "
+              f"and what they send is an order.")
+    elif tier == "ev_base":
+        flash(f"{b['company']} now sees our closeout price as the base on every item, and can take it or offer "
+              f"something else.")
     else:
-        flash(f"{b['company']} is back on the offer sheet.")
+        flash(f"{b['company']} is on the offer sheet: wholesale and a blank box, nothing suggested.")
     return redirect(url_for("admin.home"))

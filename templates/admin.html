@@ -1,9 +1,18 @@
 {% extends "base.html" %}
+{# One control for the three ways a buyer is priced (JJ, 2026-09-10). "Cost
+   plus" needs a list AOI has published, so there is one entry per list. #}
+{% macro pricing_select(b, price_lists, submit=False) -%}
+<select name="pricing" {% if submit %}onchange="this.form.submit()"{% endif %} title="how this buyer is priced">
+  <option value="offer" {% if (b.pricing_tier or 'offer') == 'offer' %}selected{% endif %}>Make an offer</option>
+  <option value="ev_base" {% if b.pricing_tier == 'ev_base' %}selected{% endif %}>EV base price</option>
+  {% for pl in price_lists %}<option value="list:{{ pl.list_id }}" {% if b.pricing_tier == 'cost_plus' and pl.list_id == b.price_list_id %}selected{% endif %}>Cost plus: {{ pl.label or pl.list_id }}</option>{% endfor %}
+</select>
+{%- endmacro %}
 {% block title %}Admin · Gerson Closeout Offers{% endblock %}
 {% block body %}
 <h1>Buyer admin <span class="muted" style="font-weight:normal">· signed in as {{ admin_email }}</span></h1>
 <p class="muted" style="margin-bottom:.2rem"><b>Class</b> decides which floor Gerson prices their offers against, and only you can set it — a regional retailer calling itself a liquidator would reach the lowest floor. New accounts start at <b>regional</b>.</p>
-<p class="muted" style="margin-bottom:.2rem"><b>Price list</b> decides what they see. <b>Offer sheet</b> is wholesale and a blank box: they bid, we counter. A list — published by AOI — puts <b>your price</b> on every item on it, with no wholesale and nothing to haggle over, and items the list does not price are off their sheet entirely. The list's name is for you; the buyer only ever sees "Your price".</p>
+<p class="muted" style="margin-bottom:.2rem"><b>Pricing</b> decides what they see (JJ, 2026-09-10). <b>Make an offer</b> is wholesale and a blank box, nothing suggested: for buyers who price off their own customer. <b>EV base price</b> shows our published closeout price beside wholesale; a quantity alone takes the line at our price, a typed price is their offer. <b>Cost plus</b> puts the price from an AOI list on every item with nothing to haggle over, and a submission is a firm order; items the list does not price are off their sheet. The list's name is for you; the buyer only ever sees "Your price".</p>
 <p class="muted">Invite buyers by email — an invitation is the approval, so they are on the sheet as soon as they sign up. The queue below is for people who found the open application form. Buyers sign in with a one-time link sent to their email. Nothing here touches NetSuite.</p>
 
 <details style="margin-bottom:1.2rem" {% if not has_password %}open{% endif %}>
@@ -59,7 +68,7 @@
     <td><b>{{ b.company }}</b></td><td>{{ b.contact }}</td><td>{{ b.email }}</td><td>{{ b.phone }}</td><td class="muted">{{ b.notes }}</td><td class="muted">{{ b.created_at[:16] }}{% if b.invite_token %} · invited{% endif %}</td>
     <td><form method="post" action="{{ url_for('admin.set_status', buyer_id=b.id) }}" style="display:flex;gap:.3rem;align-items:center">
       <select name="buyer_class">{% for c in classes %}<option value="{{ c }}" {% if c == b.buyer_class %}selected{% endif %}>{{ c }}</option>{% endfor %}</select>
-      <select name="price_list_id"><option value="">Offer sheet</option>{% for pl in price_lists %}<option value="{{ pl.list_id }}" {% if pl.list_id == b.price_list_id %}selected{% endif %}>{{ pl.label or pl.list_id }}</option>{% endfor %}</select>
+      {{ pricing_select(b, price_lists) }}
       <button name="status" value="approved">Approve</button> <button name="status" value="declined" class="sec">Decline</button></form></td>
   </tr>
   {% endfor %}
@@ -69,7 +78,7 @@
 <h2>Buyers <span class="pill">{{ buyers|length }}</span></h2>
 {% if not buyers %}<p class="muted">No approved buyers yet.</p>{% else %}
 <table>
-  <tr><th>Company</th><th>Contact</th><th>Email</th><th>Class</th><th>Price list</th><th>Emails</th><th>Status</th><th>Offers</th><th>Approved</th><th></th></tr>
+  <tr><th>Company</th><th>Contact</th><th>Email</th><th>Class</th><th>Pricing</th><th>Emails</th><th>Status</th><th>Offers</th><th>Approved</th><th></th></tr>
   {% for b in buyers %}
   <tr>
     <td><b>{{ b.company }}</b></td><td>{{ b.contact }}</td><td>{{ b.email }}</td>
@@ -77,11 +86,8 @@
       <select name="buyer_class" onchange="this.form.submit()">
         {% for c in classes %}<option value="{{ c }}" {% if c == b.buyer_class %}selected{% endif %}>{{ c }}</option>{% endfor %}
       </select><noscript><button class="sec">Set</button></noscript></form></td>
-    <td><form method="post" action="{{ url_for('admin.set_price_list', buyer_id=b.id) }}" style="display:flex;gap:.3rem">
-      <select name="price_list_id" onchange="this.form.submit()">
-        <option value="">Offer sheet</option>
-        {% for pl in price_lists %}<option value="{{ pl.list_id }}" {% if pl.list_id == b.price_list_id %}selected{% endif %}>{{ pl.label or pl.list_id }}</option>{% endfor %}
-      </select><noscript><button class="sec">Set</button></noscript></form></td>
+    <td><form method="post" action="{{ url_for('admin.set_pricing', buyer_id=b.id) }}" style="display:flex;gap:.3rem">
+      {{ pricing_select(b, price_lists, submit=True) }}<noscript><button class="sec">Set</button></noscript></form></td>
     <td><form method="post" action="{{ url_for('admin.set_cadence', buyer_id=b.id) }}" style="display:flex;gap:.3rem">
       <select name="digest_cadence" onchange="this.form.submit()" title="how often they get the new-arrivals email">
         {% for c in cadences %}<option value="{{ c }}" {% if c == (b.digest_cadence or 'weekly') %}selected{% endif %}>{{ c }}</option>{% endfor %}

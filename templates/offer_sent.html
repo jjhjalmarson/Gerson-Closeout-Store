@@ -1,19 +1,20 @@
 {% extends "base.html" %}
 {# A firm-price account sent an order at prices we quoted, not an offer. #}
 {% set firm = payload.price_mode == 'firm' %}
+{% set ev = payload.pricing_tier == 'ev_base' %}
 {% block title %}{{ 'Order request sent' if firm else 'Offer sent' }} · Gerson Closeout Offers{% endblock %}
 {% block body %}
 <h1>{{ 'Order request received' if firm else 'Offer received' }} — reference <b>OF-{{ ref }}</b></h1>
 <p class="muted">{{ payload.line_count }} line{{ 's' if payload.line_count != 1 }} · {{ payload.units }} units · ${{ '%.2f'|format(payload.total) }}{% if payload.pct_of_wholesale and not firm %} ({{ (payload.pct_of_wholesale * 100)|round|int }}% of wholesale){% endif %}.
   {% if notified %}It is with the Gerson closeout team now and a copy went to <b>{{ payload.email }}</b>;{% else %}It has been recorded and a copy went to <b>{{ payload.email }}</b>;{% endif %}
-  {% if firm %}we will confirm these prices and ship at once.{% else %}expect an acceptance or a counter by email.{% endif %}</p>
+  {% if firm %}we will confirm these prices and ship at once.{% elif ev and payload.at_base_lines == payload.line_count %}every line is at our price, so expect a confirmation by email.{% elif ev %}{{ payload.at_base_lines }} of {{ payload.line_count }} line{{ 's' if payload.line_count != 1 }} {{ 'is' if payload.at_base_lines == 1 else 'are' }} at our price; expect a reply by email on the rest.{% else %}expect an acceptance or a counter by email.{% endif %}</p>
 <table>
   {% if firm %}
   <tr><th>SKU</th><th>Description</th><th class="right">Qty</th><th class="right">Your price</th><th class="right">Extended</th></tr>
   {% for l in payload.lines %}<tr><td>{{ l.sku }}</td><td>{{ l.description }}</td><td class="right">{{ l.qty }}</td><td class="right">${{ '%.2f'|format(l.offer_price) }}</td><td class="right">${{ '%.2f'|format(l.extended) }}</td></tr>{% endfor %}
   {% else %}
-  <tr><th>SKU</th><th>Description</th><th class="right">Qty</th><th class="right">Wholesale</th><th class="right">Offer</th><th class="right">Extended</th></tr>
-  {% for l in payload.lines %}<tr><td>{{ l.sku }}</td><td>{{ l.description }}</td><td class="right">{{ l.qty }}</td><td class="right">${{ '%.2f'|format(l.wholesale) }}</td><td class="right">${{ '%.2f'|format(l.offer_price) }}</td><td class="right">${{ '%.2f'|format(l.extended) }}</td></tr>{% endfor %}
+  <tr><th>SKU</th><th>Description</th><th class="right">Qty</th><th class="right">Wholesale</th>{% if ev %}<th class="right">Our price</th>{% endif %}<th class="right">Offer</th><th class="right">Extended</th></tr>
+  {% for l in payload.lines %}<tr><td>{{ l.sku }}</td><td>{{ l.description }}</td><td class="right">{{ l.qty }}</td><td class="right">${{ '%.2f'|format(l.wholesale) }}</td>{% if ev %}<td class="right">{% if l.our_price %}${{ '%.2f'|format(l.our_price) }}{% endif %}</td>{% endif %}<td class="right">${{ '%.2f'|format(l.offer_price) }}{% if l.at_base %} <span class="muted" style="font-size:.78rem">at our price</span>{% endif %}</td><td class="right">${{ '%.2f'|format(l.extended) }}</td></tr>{% endfor %}
   {% endif %}
 </table>
 <p><a class="btn sec" href="{{ url_for('shop.offers') }}">{{ 'Everything you have sent' if firm else 'Your submitted offers' }}</a> <a class="btn sec" href="{{ sheet_url }}">{{ 'Back to your price list' if firm else 'Back to the sheet' }}</a></p>

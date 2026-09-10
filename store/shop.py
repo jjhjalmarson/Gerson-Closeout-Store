@@ -28,7 +28,7 @@ from flask import (Blueprint, Response, abort, current_app, flash, g, redirect, 
 from werkzeug.security import check_password_hash
 
 from . import mail
-from .db import ALL_COMPANIES, clean_list_id
+from .db import ALL_COMPANIES, clean_list_id, clean_tier
 
 bp = Blueprint("shop", __name__)
 PAGE_SIZE = 60
@@ -59,8 +59,8 @@ def _resolve_buyer() -> dict[str, Any] | None:
                     "email": b["email"], "companies": list(ALL_COMPANIES), "customer_id": None, "rep_name": "",
                     "buyer_id": b["id"], "buyer_class": b.get("buyer_class") or "regional",
                     # Goodwill and the rest are buyers approved here, not AOI accounts
-                    # (JJ, 2026-09-02), so this is where their price list is assigned.
-                    **_priced_off(store, b.get("price_list_id"))}
+                    # (JJ, 2026-09-02), so this is where their tier is assigned.
+                    **_priced_off(store, b.get("pricing_tier"), b.get("price_list_id"))}
         return None
     tok = session.get("invite")
     if tok:
@@ -70,7 +70,7 @@ def _resolve_buyer() -> dict[str, Any] | None:
                     "contact": inv.get("contact") or "", "email": inv.get("email") or "",
                     "companies": inv["companies"], "customer_id": None, "rep_name": "",
                     "buyer_class": inv.get("buyer_class") or "regional",
-                    "price_mode": "offer", "price_list_id": ""}
+                    "pricing_tier": "offer", "price_mode": "offer", "price_list_id": ""}
         return None
     cid = session.get("customer_id")
     if cid:
@@ -80,21 +80,32 @@ def _resolve_buyer() -> dict[str, Any] | None:
                     "contact": "", "email": "", "companies": cust["companies"], "customer_id": cust["customer_id"],
                     "rep_name": cust.get("rep_name") or "", "accounts": cust["accounts"],
                     "buyer_class": cust.get("buyer_class") or "regional",
-                    # An allowlisted account can be put on a list too -- the field
-                    # rides the customers feed rather than being set here.
-                    **_priced_off(store, cust.get("price_list_id"))}
+                    # An allowlisted account's tier rides the customers feed
+                    # rather than being set here.
+                    **_priced_off(store, cust.get("pricing_tier"), cust.get("price_list_id"))}
     return None
 
 
-def _priced_off(store, raw: Any) -> dict[str, str]:
-    """The buyer fields that decide which surface they get.  ``firm`` is a list
-    that is assigned **and** still published: a list AOI deactivated leaves the
-    buyer on the offer sheet rather than on stale prices, silently, because the
-    alternative is an empty sheet and a phone call."""
-    lid = clean_list_id(raw)
+def _priced_off(store, tier_raw: Any, list_raw: Any) -> dict[str, str]:
+    """The buyer fields that decide which of the three surfaces they get (JJ,
+    2026-09-10).  ``cost_plus`` needs a list that is assigned **and** still
+    published: a list AOI deactivated leaves the buyer on the offer sheet rather
+    than on stale prices, silently, because the alternative is an empty sheet
+    and a phone call.  ``price_mode`` stays beside the tier for AOI's desk,
+    which already reads "firm" as an order rather than an offer."""
+    tier = clean_tier(tier_raw)
+    lid = clean_list_id(list_raw)
     if lid and not store.price_list(lid):
         lid = ""
-    return {"price_list_id": lid, "price_mode": "firm" if lid else "offer"}
+    if tier == "cost_plus" and not lid:
+        tier = "offer"
+    if tier != "cost_plus":
+        lid = ""
+    return {"pricing_tier": tier, "price_list_id": lid, "price_mode": "firm" if tier == "cost_plus" else "offer"}
+
+
+def _ev_base(buyer: Mapping[str, Any] | None) -> bool:
+    return (buyer or {}).get("pricing_tier") == "ev_base"
 
 
 def _firm_prices(store, buyer: Mapping[str, Any] | None) -> dict[str, float] | None:
@@ -444,14 +455,15 @@ def home():
     # have not quoted them is not on their sheet at all.
     firm = _firm_prices(store, g.buyer)
     lid = g.buyer["price_list_id"] if firm is not None else None
+    based = _ev_base(g.buyer)
     total = store.count_products(**f, companies=companies, new_since=new_since, featured_only=featured_flag,
-                                 price_list_id=lid)
+                                 price_list_id=lid, ev_base=based)
     new_total = store.count_products(companies=companies, new_since=cutoff, price_list_id=lid)
     featured_total = store.count_products(companies=companies, featured_only=True, price_list_id=lid)
     pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
     page = min(page, pages)
     items = store.list_products(**f, sort=sort, companies=companies, new_since=new_since,
-                                featured_only=featured_flag, price_list_id=lid,
+                                featured_only=featured_flag, price_list_id=lid, ev_base=based,
                                 limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
     draft = store.draft(g.buyer["key"])
     for p in items:
@@ -460,6 +472,8 @@ def home():
         p["draft_price"] = ("%.2f" % d["price"]) if d.get("price") else ""
         if firm is not None:
             p["your_price"] = firm.get(p["sku"])
+        # Tier 2 reads our published closeout price as the base of every line.
+        p["our_price"] = p.get("ev_price") if based else None
     args = {k: v for k, v in {**f, "sort": sort if sort != "default" else None,
                               "new": "1" if new_flag else None,
                               "featured": "1" if featured_flag else None}.items() if v}
@@ -503,6 +517,7 @@ def item(sku: str):
                            draft_price=("%.2f" % d["price"]) if d.get("price") else "",
                            gallery=gallery,
                            your_price=(firm.get(sku) if firm is not None else None),
+                           our_price=(p.get("ev_price") if _ev_base(g.buyer) else None),
                            new_cutoff=new_cutoff(), draft_count=_draft_count(store, g.buyer))
 
 
@@ -539,19 +554,28 @@ def _num(raw: Any, cast=float):
 
 
 def _apply_line(draft: dict, sku: str, product: dict | None, qty_raw: Any, price_raw: Any, allowed: set,
-                firm: dict[str, float] | None = None) -> dict | None:
+                firm: dict[str, float] | None = None, ev_base: bool = False) -> dict | None:
     """Put one typed pair on the draft (snapped to whole packs, capped at what is
     available) or take the line off when either half is blank / zero / not for
     this buyer. Returns the saved line or None.
 
     ``firm`` is the buyer's quoted prices where they have them: the price then
     comes from the server and whatever was posted is ignored, so a firm line is
-    the number we quoted or it is not a line at all."""
+    the number we quoted or it is not a line at all.
+
+    ``ev_base`` (tier 2): a quantity with the price box left blank takes the
+    line at our published price -- "submit as that" (JJ, 2026-09-10) -- and a
+    typed number is their offer instead."""
     if not product or (product["company"] and product["company"] not in allowed):
         draft.pop(sku, None)
         return None
     qty = _snap_qty(_num(qty_raw, int), product["case_pack"], product["qty_available"])
-    price = round(float(firm.get(sku) or 0.0), 2) if firm is not None else round(_num(price_raw), 2)
+    if firm is not None:
+        price = round(float(firm.get(sku) or 0.0), 2)
+    else:
+        price = round(_num(price_raw), 2)
+        if ev_base and price <= 0 and qty > 0:
+            price = round(float(product.get("ev_price") or 0.0), 2)
     was = draft.get(sku)
     if qty > 0 and price > 0:
         draft[sku] = {"qty": qty, "price": price}
@@ -582,7 +606,7 @@ def offer_line():
     store = _ctx().store
     draft = store.draft(g.buyer["key"])
     line = _apply_line(draft, sku, store.products_by_skus([sku]).get(sku), body.get("qty"), body.get("price"),
-                       set(g.buyer["companies"]), _firm_prices(store, g.buyer))
+                       set(g.buyer["companies"]), _firm_prices(store, g.buyer), _ev_base(g.buyer))
     store.set_draft(g.buyer["key"], draft)
     return {"saved": True, "sku": sku, "line": line, "count": len(draft)}
 
@@ -602,9 +626,10 @@ def offer_set():
     by = store.products_by_skus(skus)
     allowed = set(g.buyer["companies"])
     firm = _firm_prices(store, g.buyer)
+    based = _ev_base(g.buyer)
     for sku in skus:
         _apply_line(draft, sku, by.get(sku), request.form.get(f"qty[{sku}]"), request.form.get(f"price[{sku}]"),
-                    allowed, firm)
+                    allowed, firm, based)
     store.set_draft(g.buyer["key"], draft)
     flash(f"{len(draft)} line{'s' if len(draft) != 1 else ''} on your "
           f"{'order request' if firm is not None else 'offer'}.")
@@ -630,6 +655,7 @@ def _offer_lines(store, buyer) -> tuple[list[dict[str, Any]], float]:
     # feed: a price that moved after the line was saved moves the line with it,
     # and a SKU we no longer quote them drops off.
     firm = _firm_prices(store, buyer)
+    based = _ev_base(buyer)
     lines, total = [], 0.0
     for sku in sorted(draft):
         p = by.get(sku)
@@ -642,15 +668,22 @@ def _offer_lines(store, buyer) -> tuple[list[dict[str, Any]], float]:
         ext = round(q * price, 2)
         total += ext
         whsl = float(p["wholesale"])
-        lines.append({"sku": sku, "description": p["description"], "brand": p["brand"], "category": p["category"],
-                      "subcategory": p["subcategory"], "company": p["company"], "case_pack": p["case_pack"],
-                      "master_pack": p["master_pack"], "inner_pack": p["inner_pack"], "qty_available": p["qty_available"],
-                      "wholesale": whsl, "qty": q, "offer_price": price, "extended": ext,
-                      "pct_of_wholesale": round(price / whsl, 4) if whsl > 0 else None})
+        line = {"sku": sku, "description": p["description"], "brand": p["brand"], "category": p["category"],
+                "subcategory": p["subcategory"], "company": p["company"], "case_pack": p["case_pack"],
+                "master_pack": p["master_pack"], "inner_pack": p["inner_pack"], "qty_available": p["qty_available"],
+                "wholesale": whsl, "qty": q, "offer_price": price, "extended": ext,
+                "pct_of_wholesale": round(price / whsl, 4) if whsl > 0 else None}
+        if based:
+            # Tier 2: which lines took our published price and which are a bid
+            # under (or over) it. AOI's desk can take the former without a round.
+            ours = p.get("ev_price")
+            line["our_price"] = ours
+            line["at_base"] = bool(ours) and abs(price - float(ours)) < 0.005
+        lines.append(line)
     return lines, round(total, 2)
 
 
-def _csv(lines: list[dict[str, Any]], *, firm: bool = False) -> str:
+def _csv(lines: list[dict[str, Any]], *, firm: bool = False, ev_base: bool = False) -> str:
     buf = io.StringIO()
     # A firm buyer's download is the quote they were given: the wholesale column
     # they never saw on the sheet has no business appearing in it.
@@ -658,6 +691,9 @@ def _csv(lines: list[dict[str, Any]], *, firm: bool = False) -> str:
     if firm:
         cols = ["price" if c == "offer_price" else c for c in cols if c != "wholesale"]
         lines = [{**l, "price": l["offer_price"]} for l in lines]
+    elif ev_base:
+        # Tier 2 saw our price beside wholesale; the download says so too.
+        cols = [c for pair in ((c, "our_price") if c == "wholesale" else (c,) for c in cols) for c in pair]
     w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
     w.writeheader()
     for l in lines:
@@ -688,7 +724,7 @@ def offer_csv():
     firm = _firm_prices(store, g.buyer) is not None
     ev("offer_downloaded", lines=len(lines))
     name = "gerson-closeout-order-request.csv" if firm else "gerson-closeout-offer.csv"
-    return Response(_csv(lines, firm=firm), mimetype="text/csv",
+    return Response(_csv(lines, firm=firm, ev_base=_ev_base(g.buyer)), mimetype="text/csv",
                     headers={"Content-Disposition": f"attachment; filename={name}"})
 
 
@@ -700,11 +736,19 @@ def _offer_text(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -
     says so, and it carries neither the wholesale column nor the % of it -- the
     numbers their sheet deliberately never showed."""
     quiet = for_buyer and payload.get("price_mode") == "firm"
+    based = payload.get("pricing_tier") == "ev_base"
     if quiet:
         rows = [f"{'SKU':<16}{'Qty':>7}{'Price':>10}{'Ext':>12}  Description"]
         for l in payload["lines"]:
             rows.append(f"{l['sku']:<16}{l['qty']:>7}{l['offer_price']:>10.2f}"
                         f"{l['extended']:>12,.2f}  {l['description'][:48]}")
+    elif based:
+        rows = [f"{'SKU':<16}{'Qty':>7}{'Whsl':>10}{'Ours':>10}{'Offer':>10}{'Ext':>12}  Description"]
+        for l in payload["lines"]:
+            ours = f"{l['our_price']:.2f}" if l.get("our_price") else ""
+            rows.append(f"{l['sku']:<16}{l['qty']:>7}{l['wholesale']:>10.2f}{ours:>10}{l['offer_price']:>10.2f}"
+                        f"{l['extended']:>12,.2f}  {l['description'][:48]}"
+                        + ("  (at our price)" if l.get("at_base") else ""))
     else:
         rows = [f"{'SKU':<16}{'Qty':>7}{'Whsl':>10}{'Offer':>10}{'% whsl':>8}{'Ext':>12}  Description"]
         for l in payload["lines"]:
@@ -716,6 +760,8 @@ def _offer_text(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -
     totals = f"Lines: {payload['line_count']}   Units: {payload['units']:,}   {label}: ${payload['total']:,.2f}"
     if payload.get("pct_of_wholesale") and not quiet:
         totals += f"   ({payload['pct_of_wholesale'] * 100:.0f}% of ${payload['wholesale_total']:,.2f} wholesale)"
+    if based and payload.get("at_base_lines") is not None:
+        totals += f"   Lines at our price: {payload['at_base_lines']} of {payload['line_count']}"
     if for_buyer and quiet:
         head = [f"Your order request OF-{ref}", totals]
         tail = ("\n\nYour lines are attached as a CSV. These are the prices we quoted you: the Gerson closeout "
@@ -751,13 +797,23 @@ def _offer_html(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -
     import html as _h
     e = lambda v: _h.escape(str(v or ""))                                   # noqa: E731
     quiet = for_buyer and payload.get("price_mode") == "firm"
+    based = payload.get("pricing_tier") == "ev_base"
     rows = []
     for l in payload["lines"]:
         pct = f"{l['pct_of_wholesale'] * 100:.0f}%" if l.get("pct_of_wholesale") else ""
-        middle = (f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b></td>" if quiet else
-                  f"<td style=\"{_TD}\">${l['wholesale']:,.2f}</td>"
-                  f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b></td>"
-                  f"<td style=\"{_TD};color:#5b6472\">{pct}</td>")
+        if quiet:
+            middle = f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b></td>"
+        elif based:
+            ours = f"${l['our_price']:,.2f}" if l.get("our_price") else ""
+            middle = (f"<td style=\"{_TD}\">${l['wholesale']:,.2f}</td>"
+                      f"<td style=\"{_TD};color:#5b6472\">{ours}</td>"
+                      f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b>"
+                      + ("<div style=\"color:#0e8c8a;font-size:11px\">at our price</div>" if l.get("at_base") else "")
+                      + "</td>")
+        else:
+            middle = (f"<td style=\"{_TD}\">${l['wholesale']:,.2f}</td>"
+                      f"<td style=\"{_TD}\"><b>${l['offer_price']:,.2f}</b></td>"
+                      f"<td style=\"{_TD};color:#5b6472\">{pct}</td>")
         rows.append(
             f"<tr><td style=\"{_TD};text-align:left\"><b>{e(l['sku'])}</b>"
             f"<div style=\"color:#5b6472;font-size:12px\">{e(l['description'])}</div></td>"
@@ -765,6 +821,7 @@ def _offer_html(payload: dict[str, Any], ref: int, *, for_buyer: bool = False) -
             + middle
             + f"<td style=\"{_TD}\">${l['extended']:,.2f}</td></tr>")
     heads = (("Item", "Qty", "Your price", "Extended") if quiet else
+             ("Item", "Qty", "Wholesale", "Our price", "Offer / unit", "Extended") if based else
              ("Item", "Qty", "Wholesale", "Offer / unit", "% whsl", "Extended"))
     table = ("<table cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;width:100%;max-width:720px\"><tr>"
              + "".join(f"<th style=\"{_TH}" + (";text-align:left" if i == 0 else "") + f"\">{h}</th>"
@@ -852,9 +909,14 @@ def offer_submit():
         # them when it was the latter.
         "price_mode": "firm" if firm else "offer",
         **({"price_list_id": g.buyer["price_list_id"]} if firm else {}),
+        # Which of the three surfaces this came off (JJ, 2026-09-10). On ev_base
+        # every line carries our_price / at_base, so the desk can take the lines
+        # at our published price without a round and negotiate only the rest.
+        "pricing_tier": g.buyer.get("pricing_tier") or "offer",
+        **({"at_base_lines": sum(1 for l in lines if l.get("at_base"))} if _ev_base(g.buyer) else {}),
     }
     ref = store.enqueue("offer", payload, customer_id=g.buyer.get("customer_id"), buyer_key=g.buyer["key"])
-    attachment = (f"offer-OF-{ref}.csv", _csv(lines).encode("utf-8"), "text/csv")
+    attachment = (f"offer-OF-{ref}.csv", _csv(lines, ev_base=_ev_base(g.buyer)).encode("utf-8"), "text/csv")
     buyer_attachment = ((f"order-request-OF-{ref}.csv", _csv(lines, firm=True).encode("utf-8"), "text/csv")
                         if firm else attachment)
     kind = "order request" if firm else "offer"
@@ -870,7 +932,8 @@ def offer_submit():
               attachments=[buyer_attachment])
     ev("offer_submitted", ref=f"OF-{ref}", lines=len(lines), units=payload["units"], total=total,
        wholesale_total=whsl_total, pct_of_wholesale=payload["pct_of_wholesale"], price_mode=payload["price_mode"],
-       price_list_id=payload.get("price_list_id"))
+       price_list_id=payload.get("price_list_id"), pricing_tier=payload["pricing_tier"],
+       at_base_lines=payload.get("at_base_lines"))
     store.set_draft(g.buyer["key"], {})
     return render_template("offer_sent.html", buyer=g.buyer, ref=ref, payload=payload, draft_count=0, notified=bool(notified))
 

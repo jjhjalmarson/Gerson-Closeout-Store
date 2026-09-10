@@ -26,36 +26,42 @@ the same key. See `docs/closeout-platform-brief.md` §0 / §11 in the AOI repo.
 The catalog feed still carries the ladder price for AOI's own use; **the sheet
 never shows it** — buyers see original wholesale and type what they will pay.
 
-## Two kinds of account (JJ / Goodwill, 2026-09-09)
+## Three ways a buyer is priced (JJ, 2026-09-10)
 
-AOI owns cost, so **AOI publishes the price lists** — `cost_plus_5` / "Landed
-cost + 5%", and whatever else the desk wants — with a price per SKU on each and
-nothing about how it was reached. The store owns who may buy, so **the store
-assigns a list to a buyer**, on `/admin` beside their class. Which one they are
-on decides the surface they get:
+`pricing_tier` on the buyer decides which surface a signed-in account sees. It
+is set per buyer in the **Pricing** column on `/admin` (or, for an allowlisted
+AOI account, carried on the `customers` feed as `pricing_tier`; a feed that
+sends a `price_list_id` and no tier means cost plus, as before):
 
-* **Offer sheet** (no list — the default, and everyone on an invite link) — the
-  sheet above: original wholesale, a blank offer box, the buyer's own margin
-  tools and the capped suggestion.
-* **A price list** — **"Your price"**, the number on their list, instead of
-  wholesale. No offer box, no suggestion, no % of wholesale; a SKU their list
-  does not price is off their sheet entirely and reads "price on request" on
-  its item page. Quantities work as before, the line price is set
-  **server-side** from the list (whatever the client posts is ignored), and
-  submitting rides the same pipeline with `price_mode: "firm"` and the
+* **`offer`** (the default, and everyone else — invite links and buyers who
+  signed up here) — **Make an offer**: original wholesale, MSRP and a blank
+  offer box. No suggested price of any kind: this is for buyers who price off
+  what their own customer will pay and want no hint from us (Bealls).
+* **`ev_base`** — **EV base price**: our published closeout price (the lower of
+  the ladder step and what NetSuite charges today) is shown beside wholesale as
+  the base of every line, with the % off. A quantity alone takes the line **at
+  our price**; a typed price is their offer. The payload carries
+  `pricing_tier: "ev_base"`, `at_base_lines`, and `our_price` / `at_base` per
+  line, so AOI's desk can confirm the lines at our price without a round and
+  negotiate only the rest (Steins). A SKU the feed has not priced is a plain
+  offer line. "Under $__" is measured on our price.
+* **`cost_plus`** — **Cost plus** off one of AOI's price lists: **"Your price"**,
+  the number AOI computed for that account, instead of wholesale. No offer box,
+  no % of wholesale; a SKU we have not quoted them is off their sheet entirely
+  and reads "price on request" on its item page. The line price is set
+  **server-side** from the stored price (whatever the client posts is ignored),
+  and submitting rides the same pipeline with `price_mode: "firm"` and the
   `price_list_id` in the offer payload, so AOI's desk knows it is an order at
-  prices we already quoted. A list AOI stops publishing leaves the buyers on it
-  back on the offer sheet.
-
-The list's `label` is admin-facing only: it names the list in the `/admin`
-dropdown and never reaches a buyer, who only ever sees "Your price".
+  prices we already quoted (Goodwill, 2026-09-09). A list AOI deactivates drops
+  the buyer back to `offer`, never onto stale prices.
 
 `prices` is a full snapshot like the other feeds; an **empty** `items` list is
-legal and means there are no lists at all (unlike `customers` / `invites`,
+legal and means no account is on firm prices (unlike `customers` / `invites`,
 where an empty feed is refused because it would wipe the allowlist).
 
-Both kinds of sheet carry an **"Under $__"** filter, measured on whichever
-price that buyer can see.
+Every sheet carries an **"Under $__"** filter, measured on whichever price that
+buyer can see. The margin-derived suggested offer that used to sit under each
+empty box is gone: tier 2's base is the suggestion, and tier 3 asked for none.
 
 ## What brings a buyer back
 
