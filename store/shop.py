@@ -380,11 +380,40 @@ def _draft_count(store, buyer) -> int:
     return len(store.draft(buyer["key"]))
 
 
+# Where the buyer was on the sheet -- filters, sort, page -- kept in the session
+# so that clicking into an item, reviewing the offer or using the header link
+# brings them back to the same place (buyer feedback via JJ, 2026-09-10: "all
+# filters drop off and you start back at page 1 item one"). The query string
+# is the whole state, so that is what we keep; nothing else about the visit.
+SHEET_QS_MAX = 1500       # a cookie session has a 4 KB ceiling; a filter never needs this much
+
+
+def _remember_sheet() -> None:
+    qs = request.query_string.decode("utf-8", "replace")
+    if qs and len(qs) <= SHEET_QS_MAX:
+        if session.get("sheet_qs") != qs:
+            session["sheet_qs"] = qs
+    elif "sheet_qs" in session:
+        session.pop("sheet_qs")
+
+
+def sheet_url() -> str:
+    """The sheet as the buyer last had it: ``/`` plus their filters and page."""
+    qs = session.get("sheet_qs") or ""
+    return url_for("shop.home") + (f"?{qs}" if qs else "")
+
+
+@bp.app_context_processor
+def _sheet_link():
+    return {"sheet_url": sheet_url()}
+
+
 @bp.get("/")
 @access_required
 def home():
     store = _ctx().store
     a = request.args
+    _remember_sheet()
     # Brand / category / subcategory are multi-select: several of each, or none.
     f = {"brand": _picks(a, "brand"), "category": _picks(a, "category"),
          "subcategory": _picks(a, "subcategory"), "q": (a.get("q") or "").strip() or None,
@@ -590,7 +619,7 @@ def offer_set():
 def offer_clear():
     _ctx().store.set_draft(g.buyer["key"], {})
     flash("Offer cleared.")
-    return redirect(url_for("shop.home"))
+    return redirect(sheet_url())
 
 
 def _offer_lines(store, buyer) -> tuple[list[dict[str, Any]], float]:

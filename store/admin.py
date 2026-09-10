@@ -19,7 +19,7 @@ from flask import Blueprint, abort, current_app, flash, redirect, render_templat
 from werkzeug.security import generate_password_hash
 
 from . import digest, mail
-from .db import BUYER_CLASSES
+from .db import BUYER_CLASSES, CADENCES
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -50,7 +50,7 @@ def home():
     buyers = [dict(b, offers=counts.get(f"buyer:{b['id']}", 0)) for b in store.list_buyers() if b["status"] in ("approved", "suspended")]
     return render_template("admin.html", admin_email=current_admin(), pending=store.list_buyers(status="pending"),
                            buyers=buyers, invites=store.list_signup_invites(), classes=list(BUYER_CLASSES),
-                           price_lists=store.price_lists(),
+                           cadences=list(CADENCES), price_lists=store.price_lists(),
                            has_password=bool(store.admin_password_hash(current_admin())),
                            digest=digest.status(_ctx()))
 
@@ -76,6 +76,31 @@ def digest_send():
         flash(f"New-arrivals digest sent to {r['sent']} buyer{'' if r['sent'] == 1 else 's'} ({r['items']} items).")
     else:
         flash("Digest not sent: " + str(r.get("reason") or "no one to send it to"))
+    return redirect(url_for("admin.home"))
+
+
+@bp.get("/featured/preview")
+@admin_required
+def featured_preview():
+    """The featured-items email exactly as a buyer would get it."""
+    ctx = _ctx()
+    items = digest.build_featured(ctx.store)
+    if not items:
+        return "<p style='font:14px Segoe UI,Arial'>Nothing is featured right now. There is no email to send.</p>"
+    return digest.featured_html(items, base_url=ctx.cfg.base_url, total=ctx.store.count_products(featured_only=True))
+
+
+@bp.post("/featured/send")
+@admin_required
+def featured_send():
+    """Hot deals went on the sheet; tell the buyers (JJ, 2026-09-10). On
+    demand only -- a person decides the picks are worth an inbox."""
+    ctx = _ctx()
+    r = digest.send_featured(ctx, sent_by=current_admin())
+    if r.get("sent"):
+        flash(f"Featured items emailed to {r['sent']} buyer{'' if r['sent'] == 1 else 's'} ({r['items']} items).")
+    else:
+        flash("Featured email not sent: " + str(r.get("reason") or "no one to send it to"))
     return redirect(url_for("admin.home"))
 
 
@@ -185,6 +210,20 @@ def set_class(buyer_id: int):
         abort(404)
     cls = ctx.store.set_buyer_class(buyer_id, request.form.get("buyer_class") or "")
     flash(f"{b['company']} is now priced as {cls}.")
+    return redirect(url_for("admin.home"))
+
+
+@bp.post("/buyers/<int:buyer_id>/cadence")
+@admin_required
+def set_cadence(buyer_id: int):
+    """How often this buyer hears about new arrivals (buyer feedback via JJ,
+    2026-09-10): Kendra asked for once a month, others want it as it lands."""
+    ctx = _ctx()
+    b = ctx.store.buyer(buyer_id)
+    if not b:
+        abort(404)
+    c = ctx.store.set_buyer_cadence(buyer_id, request.form.get("digest_cadence") or "")
+    flash(f"{b['company']} gets new-arrivals emails: {digest.CADENCE_LABELS[c]}.")
     return redirect(url_for("admin.home"))
 
 

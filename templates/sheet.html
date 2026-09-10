@@ -91,7 +91,7 @@
   {% endif %}
   <tbody>
   {% for p in items %}
-  <tr>
+  <tr id="i-{{ p.sku }}">
     <td class="thumb"><a href="{{ url_for('shop.item', sku=p.sku) }}">{% if p.image_url %}<img src="{{ url_for('shop.image', sku=p.sku) }}" alt="" loading="lazy">{% else %}<span class="ph"></span>{% endif %}</a></td>
     <td class="item">{% if p.featured_rank or p.has_video or (p.listed_since and p.listed_since >= new_cutoff) %}<span class="badges">{% if p.featured_rank %}<span class="badge-featured" title="one of the items we are leading with">Featured</span>{% endif %}{% if p.listed_since and p.listed_since >= new_cutoff %}<span class="badge-new" title="on the sheet since {{ p.listed_since }}">New</span>{% endif %}{% if p.has_video %}<span class="badge-video" title="there is a video of this one — open the item to watch it">&#9654; Video</span>{% endif %}</span>{% endif %}<a href="{{ url_for('shop.item', sku=p.sku) }}" style="color:inherit;text-decoration:none"><b>{{ p.description }}</b></a><br><span class="muted">{{ p.sku }} · {{ p.brand }}{% if p.category %} · {{ p.category }}{% endif %}{% if p.subcategory %} · {{ p.subcategory }}{% endif %}</span></td>
     <td class="muted pack">{{ pack(p) }}</td>

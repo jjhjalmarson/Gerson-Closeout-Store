@@ -7,7 +7,7 @@
 {% block body %}
 <h1>{{ 'Your order request' if firm else 'Your offer' }}</h1>
 {% if not lines %}
-<p class="muted">Nothing on it yet. <a href="{{ url_for('shop.home') }}">Back to the sheet</a> and enter {% if firm %}a quantity on the items you want{% else %}a quantity and an offered price on the items you want{% endif %}.</p>
+<p class="muted">Nothing on it yet. <a href="{{ sheet_url }}">Back to the sheet</a> and enter {% if firm %}a quantity on the items you want{% else %}a quantity and an offered price on the items you want{% endif %}.</p>
 {% else %}
 <form method="post" action="{{ url_for('shop.offer_set') }}">
 <input type="hidden" name="next" value="{{ url_for('shop.offer') }}">

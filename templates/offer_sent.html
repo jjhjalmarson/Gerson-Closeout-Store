@@ -16,5 +16,5 @@
   {% for l in payload.lines %}<tr><td>{{ l.sku }}</td><td>{{ l.description }}</td><td class="right">{{ l.qty }}</td><td class="right">${{ '%.2f'|format(l.wholesale) }}</td><td class="right">${{ '%.2f'|format(l.offer_price) }}</td><td class="right">${{ '%.2f'|format(l.extended) }}</td></tr>{% endfor %}
   {% endif %}
 </table>
-<p><a class="btn sec" href="{{ url_for('shop.offers') }}">{{ 'Everything you have sent' if firm else 'Your submitted offers' }}</a> <a class="btn sec" href="{{ url_for('shop.home') }}">{{ 'Back to your price list' if firm else 'Back to the sheet' }}</a></p>
+<p><a class="btn sec" href="{{ url_for('shop.offers') }}">{{ 'Everything you have sent' if firm else 'Your submitted offers' }}</a> <a class="btn sec" href="{{ sheet_url }}">{{ 'Back to your price list' if firm else 'Back to the sheet' }}</a></p>
 {% endblock %}

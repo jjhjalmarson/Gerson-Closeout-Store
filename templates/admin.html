@@ -27,12 +27,26 @@
 <h2>New-arrivals digest</h2>
 <p class="muted"><b>{{ digest.new_count }}</b> item{{ '' if digest.new_count == 1 else 's' }} went on the sheet in the last {{ digest.days }} days.
   {% if digest.last %}Last sent {{ digest.last.sent_at[:16].replace('T', ' ') }} to {{ digest.last.recipients }} buyer{{ '' if digest.last.recipients == 1 else 's' }} ({{ digest.last.items }} items){% if digest.last.sent_by %}, by {{ digest.last.sent_by }}{% endif %}.{% else %}Never sent.{% endif %}
-  {% if digest.weekday %}It also sends itself every <b>{{ digest.weekday }}</b> after the nightly feed, at most once a week.{% else %}Set <code>DIGEST_WEEKDAY</code> (mon…sun) on the service and it sends itself weekly; until then it goes only when you click.{% endif %}
   Buyers get the items, the pack, what is available and the original wholesale, with a link to the sheet filtered to what is new. No closeout price, as on the sheet.</p>
+<p class="muted">Each buyer chooses how often, in the <b>Emails</b> column below:
+  <b>{{ digest.by_cadence.daily }}</b> daily · <b>{{ digest.by_cadence.weekly }}</b> weekly · <b>{{ digest.by_cadence.monthly }}</b> monthly · <b>{{ digest.by_cadence.never }}</b> none.
+  {% if digest.weekday %}It sends itself after the nightly feed: daily buyers any day something new lands, weekly buyers every <b>{{ digest.weekday }}</b>, monthly buyers every fourth <b>{{ digest.weekday }}</b>. Each buyer only ever sees an item once.{% else %}Set <code>DIGEST_WEEKDAY</code> (mon…sun) on the service and it sends itself on those cadences; until then it goes only when you click.{% endif %}</p>
 <div class="bar">
   <a class="btn sec" href="{{ url_for('admin.digest_preview') }}" target="_blank">Preview the email</a>
-  <form method="post" action="{{ url_for('admin.digest_send') }}" style="margin:0" onsubmit="return confirm('Email the new-arrivals digest to {{ digest.recipients }} approved buyer(s) now?')">
-    <button type="submit" {% if not digest.new_count or not digest.recipients %}disabled{% endif %}>Send to {{ digest.recipients }} approved buyer{{ '' if digest.recipients == 1 else 's' }}</button>
+  <form method="post" action="{{ url_for('admin.digest_send') }}" style="margin:0" onsubmit="return confirm('Email the new-arrivals digest to {{ digest.recipients }} buyer(s) now, whatever their cadence?')">
+    <button type="submit" {% if not digest.new_count or not digest.recipients %}disabled{% endif %}>Send now to {{ digest.recipients }} buyer{{ '' if digest.recipients == 1 else 's' }}</button>
+  </form>
+  <span class="muted" style="font-size:.8rem">"Send now" goes to everyone who takes email, whatever their cadence.</span>
+</div>
+
+<h2>Featured items email</h2>
+<p class="muted"><b>{{ digest.featured_count }}</b> item{{ '' if digest.featured_count == 1 else 's' }} {{ 'is' if digest.featured_count == 1 else 'are' }} featured on the sheet right now.
+  {% if digest.featured_last %}Last emailed {{ digest.featured_last.sent_at[:16].replace('T', ' ') }} to {{ digest.featured_last.recipients }} buyer{{ '' if digest.featured_last.recipients == 1 else 's' }} ({{ digest.featured_last.items }} items){% if digest.featured_last.sent_by %}, by {{ digest.featured_last.sent_by }}{% endif %}.{% else %}Never emailed.{% endif %}
+  When hot deals go on the sheet, this tells every buyer who takes email — same table as the digest, wholesale only, with a link to the featured items. It never sends itself.</p>
+<div class="bar">
+  <a class="btn sec" href="{{ url_for('admin.featured_preview') }}" target="_blank">Preview the email</a>
+  <form method="post" action="{{ url_for('admin.featured_send') }}" style="margin:0" onsubmit="return confirm('Email the {{ digest.featured_count }} featured item(s) to {{ digest.recipients }} buyer(s) now?')">
+    <button type="submit" {% if not digest.featured_count or not digest.recipients %}disabled{% endif %}>Email featured items to {{ digest.recipients }} buyer{{ '' if digest.recipients == 1 else 's' }}</button>
   </form>
 </div>
 
@@ -55,7 +69,7 @@
 <h2>Buyers <span class="pill">{{ buyers|length }}</span></h2>
 {% if not buyers %}<p class="muted">No approved buyers yet.</p>{% else %}
 <table>
-  <tr><th>Company</th><th>Contact</th><th>Email</th><th>Class</th><th>Price list</th><th>Status</th><th>Offers</th><th>Approved</th><th></th></tr>
+  <tr><th>Company</th><th>Contact</th><th>Email</th><th>Class</th><th>Price list</th><th>Emails</th><th>Status</th><th>Offers</th><th>Approved</th><th></th></tr>
   {% for b in buyers %}
   <tr>
     <td><b>{{ b.company }}</b></td><td>{{ b.contact }}</td><td>{{ b.email }}</td>
@@ -67,6 +81,10 @@
       <select name="price_list_id" onchange="this.form.submit()">
         <option value="">Offer sheet</option>
         {% for pl in price_lists %}<option value="{{ pl.list_id }}" {% if pl.list_id == b.price_list_id %}selected{% endif %}>{{ pl.label or pl.list_id }}</option>{% endfor %}
+      </select><noscript><button class="sec">Set</button></noscript></form></td>
+    <td><form method="post" action="{{ url_for('admin.set_cadence', buyer_id=b.id) }}" style="display:flex;gap:.3rem">
+      <select name="digest_cadence" onchange="this.form.submit()" title="how often they get the new-arrivals email">
+        {% for c in cadences %}<option value="{{ c }}" {% if c == (b.digest_cadence or 'weekly') %}selected{% endif %}>{{ c }}</option>{% endfor %}
       </select><noscript><button class="sec">Set</button></noscript></form></td>
     <td>{{ b.status }}</td><td>{{ b.offers }}</td><td class="muted">{{ (b.approved_at or '')[:10] }} {{ b.approved_by or '' }}</td>
     <td><form method="post" action="{{ url_for('admin.set_status', buyer_id=b.id) }}" style="display:inline">
