@@ -25,11 +25,11 @@ CATALOG_NEW = {**CATALOG, "items": [
 ]}
 
 
-def _buyer(store, email, status="approved", company="Ross Stores"):
+def _buyer(store, email, status="approved", company="Ross Stores", cadence="weekly"):
     with store.engine.begin() as conn:
         conn.execute(D.buyers.insert().values(company=company, contact="Pat", email=email, phone="", notes="",
-                                              status=status, buyer_class="regional", created_at=D.now_iso(),
-                                              updated_at=D.now_iso()))
+                                              status=status, buyer_class="regional", digest_cadence=cadence,
+                                              created_at=D.now_iso(), updated_at=D.now_iso()))
 
 
 class IngestFieldsTest(StoreTestCase):
@@ -172,6 +172,136 @@ class AutoSendTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)                                                # a re-run does not double-mail
 
 
+WD = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+class CadenceTest(unittest.TestCase):
+    """Per-buyer cadence (buyer feedback via JJ, 2026-09-10): Kendra once a
+    month, others as it lands, and nobody ever sees the same item twice."""
+
+    def _app(self, weekday, buyers, listed=TODAY):
+        app = create_app(_cfg(digest_weekday=weekday))
+        app.config["TESTING"] = True
+        from unittest import mock
+        self.sent = []
+        patcher = mock.patch("store.mail.send", side_effect=lambda cfg, **kw: (self.sent.append(kw) or True))
+        patcher.start(); self.addCleanup(patcher.stop)
+        store = app.config["STORE"].store
+        items = [{**CATALOG["items"][0], "listed_since": listed.isoformat()}, {**CATALOG["items"][1], "listed_since": OLD}]
+        store.ingest_catalog(items, as_of=listed.isoformat(), generated_at=None)
+        for email, cadence in buyers:
+            _buyer(store, email, cadence=cadence, company=email.split("@")[0])
+        return app
+
+    def _mailed(self):
+        return sorted(m["to"] for m in self.sent)
+
+    def test_clean_cadence_never_falls_to_never(self):
+        self.assertEqual([D.clean_cadence(v) for v in ("daily", "MONTHLY", "never", "", None, "hourly")],
+                         ["daily", "monthly", "never", "weekly", "weekly", "weekly"])
+
+    def test_recipients_by_cadence_and_never_is_left_alone(self):
+        app = self._app("", [("d@x.test", "daily"), ("w@x.test", "weekly"), ("m@x.test", "monthly"), ("n@x.test", "never")])
+        store = app.config["STORE"].store
+        self.assertEqual(sorted(b["email"] for b in digest.recipients(store)), ["d@x.test", "m@x.test", "w@x.test"])
+        self.assertEqual([b["email"] for b in digest.recipients(store, cadence="monthly")], ["m@x.test"])
+        # "Send now" from /admin: everyone who takes email, never the "never"s
+        r = digest.send(app.config["STORE"], since=(TODAY - timedelta(days=7)).isoformat(), sent_by="admin@gerson.test")
+        self.assertEqual(r["sent"], 3)
+        self.assertNotIn("n@x.test", self._mailed())
+        self.assertEqual(store.last_digest("new_arrivals")["cadence"], "")
+
+    def test_master_switch_off_means_nobody_hears_even_daily(self):
+        app = self._app("", [("d@x.test", "daily")])
+        self.assertIsNone(digest.maybe_auto_send(app.config["STORE"], today=TODAY))
+        self.assertEqual(self.sent, [])
+
+    def test_daily_goes_any_day_something_landed_and_only_once(self):
+        other = WD[(TODAY.weekday() + 1) % 7]               # not the weekly day: daily does not care
+        app = self._app(other, [("d@x.test", "daily"), ("w@x.test", "weekly")])
+        ctx = app.config["STORE"]
+        r = digest.maybe_auto_send(ctx, today=TODAY)
+        self.assertEqual((r["sent"], self._mailed()), (1, ["d@x.test"]))
+        self.assertIn("today", self.sent[0]["subject"])
+        self.assertIsNone(digest.maybe_auto_send(ctx, today=TODAY))                        # not twice in a day
+        self.assertEqual(ctx.store.last_digest("new_arrivals", cadence="daily")["sent_by"], "auto")
+        self.assertIsNone(ctx.store.last_digest("new_arrivals", cadence="weekly"))
+
+    def test_window_starts_the_day_after_the_last_send(self):
+        app = self._app(WD[(TODAY.weekday() + 1) % 7], [("d@x.test", "daily")])
+        ctx = app.config["STORE"]
+        digest.maybe_auto_send(ctx, today=TODAY)
+        self.assertIn("Lantern", self.sent[-1]["html"])
+        tomorrow = TODAY + timedelta(days=1)
+        # Nothing new tomorrow: the daily buyer hears nothing, and Lantern is not re-sent.
+        self.assertIsNone(digest.maybe_auto_send(ctx, today=tomorrow))
+        # Something lands the day after: only that goes.
+        ctx.store.ingest_catalog([{**CATALOG["items"][0], "listed_since": TODAY.isoformat()},
+                                  {**CATALOG["items"][1], "listed_since": tomorrow.isoformat()}],
+                                 as_of=tomorrow.isoformat(), generated_at=None)
+        r = digest.maybe_auto_send(ctx, today=tomorrow)
+        self.assertEqual(r["sent"], 1)
+        self.assertIn("Tree", self.sent[-1]["html"])
+        self.assertNotIn("Lantern", self.sent[-1]["html"])
+        self.assertEqual(r["runs"][0]["since"], (TODAY + timedelta(days=1)).isoformat())
+
+    def test_weekly_and_monthly_share_the_weekday_and_monthly_waits_four_weeks(self):
+        wd = WD[TODAY.weekday()]
+        app = self._app(wd, [("w@x.test", "weekly"), ("m@x.test", "monthly")])
+        ctx = app.config["STORE"]
+        r = digest.maybe_auto_send(ctx, today=TODAY)
+        self.assertEqual((r["sent"], self._mailed()), (2, ["m@x.test", "w@x.test"]))
+        self.assertEqual(sorted(x["cadence"] for x in r["runs"]), ["monthly", "weekly"])
+        # A week on, something new: weekly hears, monthly does not.
+        wk = TODAY + timedelta(days=7)
+        ctx.store.ingest_catalog([{**CATALOG["items"][0], "listed_since": wk.isoformat()}], as_of=wk.isoformat(), generated_at=None)
+        r = digest.maybe_auto_send(ctx, today=wk)
+        self.assertEqual([x["cadence"] for x in r["runs"]], ["weekly"])
+        # Four weeks on: both.
+        mo = TODAY + timedelta(days=28)
+        ctx.store.ingest_catalog([{**CATALOG["items"][0], "listed_since": mo.isoformat()}], as_of=mo.isoformat(), generated_at=None)
+        r = digest.maybe_auto_send(ctx, today=mo)
+        self.assertEqual(sorted(x["cadence"] for x in r["runs"]), ["monthly", "weekly"])
+        monthly = [x for x in r["runs"] if x["cadence"] == "monthly"][0]
+        self.assertEqual(monthly["since"], (TODAY + timedelta(days=1)).isoformat())          # the day after its own last send
+        self.assertIn("this month", [m for m in self.sent if m["to"] == "m@x.test"][-1]["subject"])
+        # Not on another weekday, whatever the gap.
+        self.assertIsNone(digest.maybe_auto_send(ctx, today=mo + timedelta(days=1)))
+
+
+class FeaturedMailTest(StoreTestCase):
+    """Hot deals went on the sheet; tell the buyers (JJ, 2026-09-10)."""
+    FEATURED = {**CATALOG, "items": [CATALOG["items"][0], {**CATALOG["items"][1], "featured_rank": 1}]}
+
+    def setUp(self):
+        super().setUp()
+        self.ctx = self.app.config["STORE"]
+
+    def test_send_featured_goes_to_everyone_who_takes_mail_and_says_no_price(self):
+        self.ingest("catalog", CATALOG)
+        _buyer(self.store, "pat@ross.test")
+        r = digest.send_featured(self.ctx, sent_by="admin@gerson.test")
+        self.assertEqual((r["sent"], r["reason"]), (0, "nothing is featured right now"))
+        self.ingest("catalog", self.FEATURED)
+        _buyer(self.store, "kendra@monthly.test", cadence="monthly", company="Kendra Co")
+        _buyer(self.store, "quiet@never.test", cadence="never", company="Quiet Co")
+        r = digest.send_featured(self.ctx, sent_by="admin@gerson.test")
+        self.assertEqual((r["sent"], r["items"]), (2, 1))
+        self.assertEqual(sorted(m["to"] for m in self.sent), ["kendra@monthly.test", "pat@ross.test"])
+        m = self.sent[0]
+        self.assertEqual(m["subject"], "1 featured closeout item on the Gerson sheet — our sharpest prices")
+        self.assertIn("Tree", m["html"]); self.assertNotIn("Lantern", m["html"])
+        self.assertIn("http://store.test/?featured=1", m["html"]); self.assertIn("http://store.test/?featured=1", m["body"])
+        self.assertIn("$100.00", m["html"])                                                  # wholesale
+        for hidden in ("$30.00", "70%", "featured_rank", "closeout_price"):                  # not the ladder, not the flag
+            self.assertNotIn(hidden, m["html"]); self.assertNotIn(hidden, m["body"])
+        last = self.store.last_digest("featured")
+        self.assertEqual((last["items"], last["recipients"], last["sent_by"]), (1, 2, "admin@gerson.test"))
+        self.assertIsNone(self.store.last_digest("new_arrivals"))                            # its own record
+        s = digest.status(self.ctx)
+        self.assertEqual((s["featured_count"], s["featured_last"]["recipients"], s["by_cadence"]["never"]), (1, 2, 1))
+
+
 class AdminRoutesTest(StoreTestCase):
     def setUp(self):
         super().setUp()
@@ -186,12 +316,36 @@ class AdminRoutesTest(StoreTestCase):
         self.assertEqual(self.client.get("/admin/digest/preview").status_code, 404)
         self.assertEqual(self.client.post("/admin/digest/send").status_code, 404)
 
+    def test_set_cadence_and_featured_routes(self):
+        self._admin()
+        b = self.store.buyer_for_email("pat@ross.test")
+        r = self.client.post(f"/admin/buyers/{b['id']}/cadence", data={"digest_cadence": "monthly"}, follow_redirects=True)
+        self.assertIn("once a month", r.get_data(as_text=True))
+        self.assertEqual(self.store.buyer(b["id"])["digest_cadence"], "monthly")
+        self.client.post(f"/admin/buyers/{b['id']}/cadence", data={"digest_cadence": "bogus"})
+        self.assertEqual(self.store.buyer(b["id"])["digest_cadence"], "weekly")                # unknown = the default
+        self.assertEqual(self.client.post("/admin/buyers/999/cadence", data={"digest_cadence": "daily"}).status_code, 404)
+        home = self.client.get("/admin/").get_data(as_text=True)
+        self.assertIn('<option value="weekly" selected>', home)
+        self.assertIn("Featured items email", home)
+        prev = self.client.get("/admin/featured/preview").get_data(as_text=True)
+        self.assertIn("Nothing is featured", prev)
+        r = self.client.post("/admin/featured/send", follow_redirects=True)
+        self.assertIn("Featured email not sent", r.get_data(as_text=True))
+        self.ingest("catalog", FeaturedMailTest.FEATURED)
+        self.assertIn("Tree", self.client.get("/admin/featured/preview").get_data(as_text=True))
+        r = self.client.post("/admin/featured/send", follow_redirects=True)
+        self.assertIn("Featured items emailed to 1 buyer", r.get_data(as_text=True))
+        self.assertEqual([m["to"] for m in self.sent], ["pat@ross.test"])
+        self.assertIn("Last emailed", self.client.get("/admin/").get_data(as_text=True))
+
     def test_home_preview_and_send(self):
         self._admin()
         home = self.client.get("/admin/").get_data(as_text=True)
         self.assertIn("New-arrivals digest", home)
         self.assertIn("<b>1</b> item went on the sheet", home)
-        self.assertIn("Send to 1 approved buyer<", home)
+        self.assertIn("Send now to 1 buyer<", home)
+        self.assertIn("<b>1</b> weekly", home)
         prev = self.client.get("/admin/digest/preview").get_data(as_text=True)
         self.assertIn("Lantern", prev)
         r = self.client.post("/admin/digest/send", follow_redirects=True)

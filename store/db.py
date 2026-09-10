@@ -110,6 +110,10 @@ digest_runs = sa.Table(
     sa.Column("recipients", sa.Integer, nullable=False, default=0),
     sa.Column("sent_by", sa.String(200), default=""),
     sa.Column("sent_at", sa.String(32), nullable=False),
+    # Which cadence's buyers this run served ("daily" / "weekly" / "monthly"),
+    # or "" for a send-to-everyone from /admin. The auto-send paces each
+    # cadence off its own last row.
+    sa.Column("cadence", sa.String(10), nullable=False, default=""),
 )
 
 customers = sa.Table(
@@ -202,6 +206,10 @@ buyers = sa.Table(
     # 2026-09-09). Assigned here rather than in AOI because this is where the
     # real outside buyers live: AOI has never heard of Goodwill of Minnesota.
     sa.Column("price_list_id", sa.String(64)),
+    # How often the new-arrivals digest reaches them (buyer feedback via JJ,
+    # 2026-09-10): daily | weekly | monthly | never. Weekly is what everyone
+    # had before there was a choice.
+    sa.Column("digest_cadence", sa.String(10), nullable=False, default="weekly"),
     sa.Column("invite_token", sa.String(64)),
     sa.Column("created_at", sa.String(32), nullable=False),
     sa.Column("approved_at", sa.String(32)),
@@ -347,6 +355,18 @@ _LIST_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 def _clean_class(value: Any) -> str:
     v = str(value or "").strip().lower()
     return v if v in BUYER_CLASSES else DEFAULT_BUYER_CLASS
+
+
+# How often a buyer hears about new arrivals. Anything unrecognised is weekly,
+# which is what every buyer had before the choice existed -- never "never", so
+# a typo cannot quietly drop someone off the list.
+CADENCES: tuple[str, ...] = ("daily", "weekly", "monthly", "never")
+DEFAULT_CADENCE = "weekly"
+
+
+def clean_cadence(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    return v if v in CADENCES else DEFAULT_CADENCE
 
 
 def clean_list_id(value: Any) -> str:
@@ -750,6 +770,16 @@ class Store:
                          .values(buyer_class=cls, updated_at=now_iso()))
         return cls
 
+    def set_buyer_cadence(self, buyer_id: int, cadence: str) -> str:
+        """How often this buyer gets the new-arrivals digest (JJ, 2026-09-10:
+        Kendra said once a month; others want it as it lands).  Returns what
+        was actually stored."""
+        c = clean_cadence(cadence)
+        with self.engine.begin() as conn:
+            conn.execute(sa.update(buyers).where(buyers.c.id == int(buyer_id))
+                         .values(digest_cadence=c, updated_at=now_iso()))
+        return c
+
     def set_buyer_price_list(self, buyer_id: int, list_id: str) -> str:
         """Which price list this buyer buys off (JJ / Goodwill, 2026-09-09), or
         "" for the offer sheet.  An admin's call, like the class: it is the
@@ -988,16 +1018,22 @@ class Store:
 
     # --- digests --------------------------------------------------------------
 
-    def record_digest(self, kind: str, *, since: str | None, items: int, recipients: int, sent_by: str = "") -> None:
+    def record_digest(self, kind: str, *, since: str | None, items: int, recipients: int, sent_by: str = "",
+                      cadence: str = "") -> None:
         with self.engine.begin() as conn:
             conn.execute(digest_runs.insert().values(kind=str(kind)[:20], since=(str(since)[:10] if since else None),
                                                      items=int(items), recipients=int(recipients),
-                                                     sent_by=str(sent_by or "")[:200], sent_at=now_iso()))
+                                                     sent_by=str(sent_by or "")[:200], sent_at=now_iso(),
+                                                     cadence=str(cadence or "")[:10]))
 
-    def last_digest(self, kind: str) -> dict[str, Any] | None:
+    def last_digest(self, kind: str, *, cadence: str | None = None) -> dict[str, Any] | None:
+        """The latest run of this kind -- of one cadence when asked, otherwise
+        whichever went most recently."""
+        stmt = sa.select(digest_runs).where(digest_runs.c.kind == str(kind))
+        if cadence is not None:
+            stmt = stmt.where(digest_runs.c.cadence == str(cadence))
         with self.engine.connect() as conn:
-            row = conn.execute(sa.select(digest_runs).where(digest_runs.c.kind == str(kind))
-                               .order_by(digest_runs.c.id.desc()).limit(1)).mappings().first()
+            row = conn.execute(stmt.order_by(digest_runs.c.id.desc()).limit(1)).mappings().first()
         return dict(row) if row else None
 
     # --- images -------------------------------------------------------------
@@ -1319,7 +1355,9 @@ def _ensure_columns(eng: Engine) -> None:
               "login_tokens": {"subject": "VARCHAR(200)"},
               "rounds": {"opened_at": "VARCHAR(32)"},
               "buyers": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'",
-                         "price_list_id": "VARCHAR(64)"},
+                         "price_list_id": "VARCHAR(64)",
+                         "digest_cadence": "VARCHAR(10) NOT NULL DEFAULT 'weekly'"},
+              "digest_runs": {"cadence": "VARCHAR(10) NOT NULL DEFAULT ''"},
               "invites": {"buyer_class": "VARCHAR(20) NOT NULL DEFAULT 'regional'"}}
     with eng.begin() as conn:
         for table, cols in wanted.items():

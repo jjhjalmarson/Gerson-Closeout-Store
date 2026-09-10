@@ -268,6 +268,36 @@ class SheetTest(StoreTestCase):
         self.assertIn('<option value="Park Hill Collection" selected>', page)
         self.assertIn('name="min_cases" type="number" min="0" step="1" value="5"', page)
 
+    def test_back_to_the_sheet_returns_to_the_same_filters_and_page(self):
+        """Clicking into an item, reviewing the offer or using the header link
+        lands back on the sheet as the buyer left it, scrolled to the row
+        (buyer feedback via JJ, 2026-09-10)."""
+        from store import shop
+        skus = [{**CATALOG["items"][0], "sku": f"P{i:03d}", "internal_id": str(100 + i)} for i in range(shop.PAGE_SIZE + 5)]
+        self.ingest("catalog", {**CATALOG, "items": CATALOG["items"] + skus})
+        self.assertIn('<tr id="i-T2">', self.client.get("/?brand=Park+Hill+Collection").get_data(as_text=True))  # rows are anchors
+        qs = "brand=Fall%2FHoliday&sort=qty&page=2"
+        self.assertIn("page 2 of 2", self.client.get(f"/?{qs}").get_data(as_text=True))
+        qh = qs.replace("&", "&amp;")                                                      # as it renders in an href
+        item = self.client.get("/item/L1").get_data(as_text=True)
+        self.assertIn(f'href="/?{qh}#i-L1">← Offer sheet', item)                          # the back link
+        self.assertIn(f'<a href="/?{qh}">Offer sheet</a>', item)                           # the header link
+        self.assertIn(f'<a href="/?{qh}">Offer sheet</a>', self.client.get("/offer").get_data(as_text=True))
+        self.assertIn(f'href="/?{qh}">Back to the sheet', self.client.get("/offer").get_data(as_text=True))
+        # A new page or filter replaces the remembered one; "Clear" (the bare sheet) forgets it.
+        self.client.get("/?q=lantern")
+        self.assertIn('href="/?q=lantern#i-L1"', self.client.get("/item/L1").get_data(as_text=True))
+        self.client.get("/")
+        self.assertIn('href="/#i-L1">← Offer sheet', self.client.get("/item/L1").get_data(as_text=True))
+        self.assertIn('<a href="/">Offer sheet</a>', self.client.get("/item/L1").get_data(as_text=True))
+        # Clearing the offer goes back to the sheet as it was, too.
+        self.client.get(f"/?{qs}")
+        r = self.client.post("/offer/clear")
+        self.assertEqual(r.headers["Location"], f"/?{qs}")
+        # An absurdly long query string is not kept: the session is a cookie.
+        self.client.get("/?q=" + "x" * (shop.SHEET_QS_MAX + 1))
+        self.assertIn('<a href="/">Offer sheet</a>', self.client.get("/item/L1").get_data(as_text=True))
+
     def test_filters_search_sort_and_paging(self):
         html = self.client.get("/?brand=Park+Hill+Collection").get_data(as_text=True)
         self.assertIn("Tree", html); self.assertNotIn("Lantern", html)

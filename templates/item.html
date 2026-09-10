@@ -2,7 +2,9 @@
 {% from "_macros.html" import pack %}
 {% block title %}{{ p.sku }} · Gerson Closeout Offers{% endblock %}
 {% block body %}
-<p><a href="{{ url_for('shop.home') }}">← Offer sheet</a></p>
+{# Back to the sheet as they left it -- same filters, same page -- and scrolled
+   to this row (buyer feedback, 2026-09-10). #}
+<p><a href="{{ sheet_url }}#i-{{ p.sku }}">← {{ 'Your prices' if buyer.price_mode == 'firm' else 'Offer sheet' }}</a></p>
 <div style="display:grid;grid-template-columns:minmax(240px,420px) 1fr;gap:1.5rem">
   <div>
     {# The hero is served from our own cache; the rest come straight off

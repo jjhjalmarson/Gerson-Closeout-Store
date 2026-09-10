@@ -63,13 +63,26 @@ price that buyer can see.
   the header counts them ("12 new items added in the last 14 days") and links
   to the sheet filtered to just those (`?new=1&sort=newest`). "Newest on the
   sheet" is a sort; "only the last 14 days" is a filter.
-* **New-arrivals digest** (`store/digest.py`): one email to every approved buyer
-  with what went on the sheet in the last `DIGEST_DAYS` (7): item, pack,
-  available, original wholesale, a link to the new items. No closeout price, as
-  on the sheet. Sent from `/admin` (preview, then send), or by itself after the
-  nightly catalog feed on `DIGEST_WEEKDAY` (`mon`..`sun`), at most once a week;
-  unset (the default) means it never sends on its own. Every send is recorded
-  in `digest_runs`.
+* **New-arrivals digest** (`store/digest.py`): one email per approved buyer
+  with what went on the sheet since they last heard: item, pack, available,
+  original wholesale, a link to the new items. No closeout price, as on the
+  sheet. **Cadence is per buyer** (buyer feedback, 2026-09-10: Kendra wants
+  once a month, others want it as it lands) — `daily` / `weekly` (default) /
+  `monthly` / `never`, set in the Emails column on `/admin`. It sends itself
+  after the nightly catalog feed once `DIGEST_WEEKDAY` (`mon`..`sun`) is set:
+  daily buyers any day something new landed, weekly buyers on that weekday,
+  monthly buyers every fourth one; each cadence's window starts the day after
+  its last send, so a buyer sees an item once. Unset (the default) means
+  nothing sends on its own. "Send now" on `/admin` (preview, then send) goes to
+  everyone who takes email, covering the last `DIGEST_DAYS` (7). Every send is
+  recorded in `digest_runs` with its cadence.
+* **Featured items email**: when AOI's featured list is worth an inbox, `/admin`
+  previews and sends it (same table, wholesale only, link to `?featured=1`) to
+  every buyer who takes email. On demand only; it never sends itself.
+* **Back to where you were**: clicking into an item, reviewing the offer or
+  using the header link returns a buyer to the sheet with the same filters,
+  sort and page, scrolled to the row they left (buyer feedback, 2026-09-10).
+  The sheet remembers its last query string in the session; "Clear" forgets it.
 
 ## Who gets in
 
