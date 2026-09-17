@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Signing in — Gerson Closeout Offers{% endblock %}
+{% block body %}
+<div class="login">
+  <h1>Signing you in…</h1>
+  <form method="post" id="continue" action="{{ url_for('shop.login_token_post', token=token) }}">
+    <p>One moment. If this page does not move on by itself, press the button.</p>
+    <div style="margin-top:.8rem"><button type="submit">Continue to the offer sheet</button></div>
+  </form>
+</div>
+<script>document.getElementById("continue").submit();</script>
+{% endblock %}

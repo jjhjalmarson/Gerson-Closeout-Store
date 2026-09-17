@@ -675,14 +675,32 @@ class Store:
                                                       customer_id=str(customer_id or ""), subject=subj, expires_at=exp))
         return token
 
+    def peek_login_token(self, token: str) -> dict[str, Any] | None:
+        """Is this link still good? Reads without spending it, so a mail scanner
+        (or a link preview) opening the URL leaves the buyer's one use intact."""
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.select(login_tokens).where(login_tokens.c.token == token)).mappings().first()
+        return self._login_subject_of(row) if row and not row["used_at"] and row["expires_at"] >= now_iso() else None
+
     def redeem_login_token(self, token: str) -> dict[str, Any] | None:
-        """Single use, unexpired. Returns ``{subject, email}`` or None."""
+        """Single use, unexpired. Returns ``{subject, email}`` or None. The mark
+        is one conditional UPDATE, so two requests racing for the same link
+        cannot both win."""
         now = now_iso()
         with self.engine.begin() as conn:
-            row = conn.execute(sa.select(login_tokens).where(login_tokens.c.token == token)).mappings().first()
-            if not row or row["used_at"] or row["expires_at"] < now:
+            won = conn.execute(sa.update(login_tokens)
+                               .where(login_tokens.c.token == token, login_tokens.c.used_at.is_(None),
+                                      login_tokens.c.expires_at >= now)
+                               .values(used_at=now)).rowcount
+            if won != 1:
                 return None
-            conn.execute(sa.update(login_tokens).where(login_tokens.c.token == token).values(used_at=now))
+            row = conn.execute(sa.select(login_tokens).where(login_tokens.c.token == token)).mappings().first()
+        return self._login_subject_of(row)
+
+    @staticmethod
+    def _login_subject_of(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if not row:
+            return None
         subject = row["subject"] or (f"cust:{row['customer_id']}" if row["customer_id"] else "")
         return {"subject": subject, "email": row["email"]} if subject else None
 

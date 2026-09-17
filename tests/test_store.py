@@ -63,7 +63,7 @@ class StoreTestCase(unittest.TestCase):
         self.client.post("/login", data={"email": email})
         with self.store.engine.connect() as conn:
             tok = conn.execute(sa.select(D.login_tokens.c.token).order_by(D.login_tokens.c.expires_at.desc())).first()[0]
-        return self.client.get(f"/login/{tok}", follow_redirects=False)
+        return self.client.post(f"/login/{tok}", follow_redirects=False)
 
     def use_invite(self, token="ross-xyz"):
         return self.client.get(f"/i/{token}", follow_redirects=False)
@@ -199,14 +199,38 @@ class AccessTest(StoreTestCase):
         self.client.post("/login", data={"email": "donna-n@live.com"})
         with self.store.engine.connect() as conn:
             tok = conn.execute(sa.select(D.login_tokens.c.token)).first()[0]
-        self.assertEqual(self.client.get(f"/login/{tok}").status_code, 302)
+        self.assertEqual(self.client.post(f"/login/{tok}").status_code, 302)
         self.client.post("/logout")
+        r = self.client.post(f"/login/{tok}", follow_redirects=True)
+        self.assertIn("expired or was already used", r.get_data(as_text=True))
         r = self.client.get(f"/login/{tok}", follow_redirects=True)
         self.assertIn("expired or was already used", r.get_data(as_text=True))
         past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(timespec="seconds")
         with self.store.engine.begin() as conn:
             conn.execute(D.login_tokens.insert().values(token="old", email="donna-n@live.com", customer_id="26003", expires_at=past))
+        self.assertIsNone(self.store.peek_login_token("old"))
         self.assertIsNone(self.store.redeem_login_token("old"))
+
+    def test_opening_the_link_does_not_spend_it(self):
+        """A mail scanner GETs (and HEADs) the link before the buyer does; the
+        buyer's own click, the POST from the continue page, still signs in."""
+        self.seed()
+        self.client.post("/login", data={"email": "donna-n@live.com"})
+        with self.store.engine.connect() as conn:
+            tok = conn.execute(sa.select(D.login_tokens.c.token)).first()[0]
+        for _ in range(3):
+            self.assertEqual(self.client.head(f"/login/{tok}").status_code, 200)
+            r = self.client.get(f"/login/{tok}")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn(f'action="/login/{tok}"', r.get_data(as_text=True))
+            self.assertIn("Continue", r.get_data(as_text=True))
+        self.assertIsNotNone(self.store.peek_login_token(tok))
+        with self.client.session_transaction() as sess:
+            self.assertNotIn("customer_id", sess)
+        r = self.client.post(f"/login/{tok}")
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("Sign out", self.client.get("/").get_data(as_text=True))
+        self.assertIsNone(self.store.peek_login_token(tok))
 
     def test_deactivated_customer_is_logged_out(self):
         self.seed()
@@ -637,7 +661,7 @@ class SignupAdminTest(StoreTestCase):
 
     def admin_login(self, email="admin@gerson.test"):
         self.client.post("/login", data={"email": email})
-        return self.client.get(self._link(self.sent[-1]["body"], "/login/"))
+        return self.client.post(self._link(self.sent[-1]["body"], "/login/"))
 
     def test_admin_signs_in_by_link_and_portal_is_hidden_from_others(self):
         self.assertEqual(self.client.get("/admin/").status_code, 404)
@@ -1293,7 +1317,7 @@ class GoodwillBuyerTest(StoreTestCase):
         self.buyer = self.app.test_client()
         self.client.post("/login", data={"email": "admin@gerson.test"})
         import re as _re
-        self.client.get(_re.search(r"http://store\.test(/[^\s]+)", self.sent[-1]["body"]).group(1))
+        self.client.post(_re.search(r"http://store\.test(/[^\s]+)", self.sent[-1]["body"]).group(1))
 
     def _approve(self, **extra):
         self.buyer.post("/apply", data={"company": "Goodwill of Minnesota", "contact": "Jennifer",
@@ -1303,7 +1327,7 @@ class GoodwillBuyerTest(StoreTestCase):
         import re as _re
         link = _re.search(r"http://store\.test(/login/[^\s]+)",
                           next(m for m in self.sent if m["to"] == "jen@goodwill.test" and "/login/" in m["body"])["body"])
-        self.buyer.get(link.group(1))
+        self.buyer.post(link.group(1))
         return b
 
     def test_the_admin_dropdown_puts_a_self_signed_up_buyer_on_firm_prices(self):
@@ -1470,7 +1494,7 @@ class EvBaseTierTest(StoreTestCase):
         admin = self.app.test_client()
         admin.post("/login", data={"email": "admin@gerson.test"})
         import re as _re
-        admin.get(_re.search(r"http://store\.test(/[^\s]+)", self.sent[-1]["body"]).group(1))
+        admin.post(_re.search(r"http://store\.test(/[^\s]+)", self.sent[-1]["body"]).group(1))
         r = admin.post(f"/admin/buyers/{b['id']}/pricing", data={"pricing": "ev_base"}, follow_redirects=True)
         self.assertIn("our closeout price as the base", r.get_data(as_text=True))
         row = self.store.buyer(b["id"])

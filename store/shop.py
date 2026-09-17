@@ -223,6 +223,20 @@ def login_post():
 
 @bp.get("/login/<token>")
 def login_token(token: str):
+    """Opening the link does not spend it. Mail scanners (Microsoft Safe Links
+    and its kind) and link previews GET every URL in a message before the
+    reader does; a link that signed in on GET arrived already used. So the GET
+    only checks the link and hands back a page that POSTs itself; the POST
+    (below) is what signs in, and no scanner submits a form."""
+    ctx = _ctx()
+    if not ctx.store.peek_login_token(token):
+        flash("That sign-in link has expired or was already used. Request a new one.")
+        return redirect(url_for("shop.login"))
+    return render_template("login_continue.html", token=token)
+
+
+@bp.post("/login/<token>")
+def login_token_post(token: str):
     ctx = _ctx()
     got = ctx.store.redeem_login_token(token)
     if not got:
