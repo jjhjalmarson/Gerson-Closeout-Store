@@ -134,6 +134,11 @@ customers = sa.Table(
     # Which of the three surfaces (JJ, 2026-09-10) -- see PRICING_TIERS. An
     # older AOI sends nothing: a list means cost_plus, otherwise the offer sheet.
     sa.Column("pricing_tier", sa.String(12), nullable=False, default="offer"),
+    # AOI marked the account lost ("won't buy from us") or not a real account
+    # (AOI PR #206). It stays on the allowlist -- it signs in, offers, gets its
+    # sign-in links and replies -- but no marketing mail goes to it: no digest,
+    # no featured email. Only the boolean crosses; the reason stays in AOI.
+    sa.Column("mail_hold", sa.Boolean, nullable=False, default=False),
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
@@ -159,6 +164,21 @@ customer_emails = sa.Table(
     "customer_emails", metadata,
     sa.Column("email", sa.String(200), primary_key=True),
     sa.Column("customer_id", sa.String(32), nullable=False, index=True),
+)
+
+# Addresses AOI holds from marketing mail (mail_hold on the customers feed).
+# Kept apart from customer_emails, which is rebuilt from every snapshot, because
+# a hold is sticky: an address stays held until a feed lists it on an account
+# that is not held.  A held account dropping off the feed (removed from the AOI
+# allowlist, or its NetSuite email missing from one night's fetch) therefore
+# does not put it back on the digest.  An address listed on a held account and
+# an open one is NOT held: "not a real account -- duplicate" is the commonest
+# hold, and the duplicate lists the real buyer's address.
+mail_holds = sa.Table(
+    "mail_holds", metadata,
+    sa.Column("email", sa.String(200), primary_key=True),
+    sa.Column("customer_id", sa.String(32), nullable=False, default=""),
+    sa.Column("held_at", sa.String(32), nullable=False),
 )
 
 curation = sa.Table(
@@ -391,6 +411,17 @@ DEFAULT_TIER = "offer"
 TIER_LABELS = {"offer": "Make an offer", "ev_base": "EV base price", "cost_plus": "Cost plus"}
 
 
+def feed_flag(value: Any) -> bool:
+    """A boolean off the feed, read strictly: JSON true (or 1 / "true" / "yes")
+    is True; missing, null, false and anything else is False -- so a stray
+    string "false" can never turn into a hold, nor a garbled value into one."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    return str(value or "").strip().lower() in ("true", "1", "yes")
+
+
 def clean_tier(value: Any) -> str:
     v = str(value or "").strip().lower()
     return v if v in PRICING_TIERS else DEFAULT_TIER
@@ -493,6 +524,7 @@ class Store:
     def ingest_customers(self, items: Iterable[dict[str, Any]], *, as_of: str | None, generated_at: str | None) -> int:
         now = now_iso()
         rows, emails = [], []
+        listed: dict[str, str | None] = {}      # email -> held customer id, or "" when an open account lists it
         for it in items:
             cid = str(it["customer_id"])
             rows.append({
@@ -506,12 +538,19 @@ class Store:
                 # it was before tiers existed; neither is the offer sheet.
                 "pricing_tier": (clean_tier(it.get("pricing_tier")) if it.get("pricing_tier")
                                  else ("cost_plus" if clean_list_id(it.get("price_list_id")) else "offer")),
+                # The feed is a full snapshot: missing (an older AOI) is no hold.
+                "mail_hold": feed_flag(it.get("mail_hold")),
                 "active": True, "updated_at": now,
             })
             for e in it.get("emails") or []:
                 e = str(e).strip().lower()
                 if e:
                     emails.append({"email": e, "customer_id": cid})
+                    # held only if every account listing the address is held
+                    if not rows[-1]["mail_hold"]:
+                        listed[e] = ""
+                    elif e not in listed:
+                        listed[e] = cid
         with self.engine.begin() as conn:
             conn.execute(sa.update(customers).values(active=False))
             _upsert(conn, customers, rows, "customer_id")
@@ -522,6 +561,15 @@ class Store:
                 seen[e["email"]] = e
             if seen:
                 conn.execute(customer_emails.insert(), list(seen.values()))
+            # Sticky holds: an address this feed lists is set (held) or lifted
+            # (open); one it does not list keeps whatever it had.
+            lift = [e for e, c in listed.items() if not c]
+            for i in range(0, len(lift), 500):
+                conn.execute(sa.delete(mail_holds).where(mail_holds.c.email.in_(lift[i:i + 500])))
+            have = {r[0] for r in conn.execute(sa.select(mail_holds.c.email)).all()}
+            new = [{"email": e, "customer_id": c, "held_at": now} for e, c in listed.items() if c and e not in have]
+            if new:
+                conn.execute(mail_holds.insert(), new)
             conn.execute(feed_runs.insert().values(kind="customers", count=len(rows), as_of=as_of,
                                                    generated_at=generated_at, received_at=now))
         return len(rows)
@@ -657,6 +705,13 @@ class Store:
                 .where(customer_emails.c.email == e, customers.c.active.is_(True))
             ).mappings().first()
         return _cust(row) if row else None
+
+    def mail_held_emails(self) -> set[str]:
+        """Addresses on an AOI account that is mail-held (lost / not a real
+        account). Marketing sends skip them; transactional mail does not ask."""
+        with self.engine.connect() as conn:
+            rs = conn.execute(sa.select(mail_holds.c.email)).all()
+        return {str(r[0]).strip().lower() for r in rs}
 
     def customer(self, customer_id: str) -> dict[str, Any] | None:
         with self.engine.connect() as conn:
@@ -1448,7 +1503,8 @@ def _ensure_columns(eng: Engine) -> None:
                            "published_disc_pct": "INTEGER NOT NULL DEFAULT 0"},
               "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'",
                             "price_list_id": "VARCHAR(64)",
-                            "pricing_tier": "VARCHAR(12) NOT NULL DEFAULT 'offer'"},
+                            "pricing_tier": "VARCHAR(12) NOT NULL DEFAULT 'offer'",
+                            "mail_hold": "BOOLEAN NOT NULL DEFAULT FALSE"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
               "login_tokens": {"subject": "VARCHAR(200)"},
               "rounds": {"opened_at": "VARCHAR(32)"},

@@ -19,7 +19,7 @@ the same key. See `docs/closeout-platform-brief.md` §0 / §11 in the AOI repo.
 |---|---|---|
 | `catalog` | SKU, description, image, brand, category, case / master / inner pack, wholesale, approximate quantity, company, `listed_since` (first run on the sheet; null = before AOI kept track), `price_changed_at`, `price_was` | cost, receipt date, age, bucket, advance rate, floors, tier, state |
 | `invites` | invite token, label (who it went to), contact, email, companies, expiry | anything else |
-| `customers` | allowlisted NetSuite accounts (id, company, login emails, rep, `price_list_id`) — may also sign in by magic link | AR, order history, credit |
+| `customers` | allowlisted NetSuite accounts (id, company, login emails, rep, `price_list_id`, `mail_hold`) — may also sign in by magic link | AR, order history, credit |
 | `curation` | per-customer SKU lists (kept for AOI compatibility; not shown on the sheet) | the history behind the ranking |
 | `prices` | the price lists and what is on them: `[{list_id, label, prices: {sku: number}}]` | how a price was arrived at — basis, markup, cost |
 
@@ -58,6 +58,18 @@ sends a `price_list_id` and no tier means cost plus, as before):
 `prices` is a full snapshot like the other feeds; an **empty** `items` list is
 legal and means no account is on firm prices (unlike `customers` / `invites`,
 where an empty feed is refused because it would wipe the allowlist).
+
+`mail_hold: true` on a `customers` row (AOI, 2026-09-25) means AOI marked the
+account lost or not a real account. It stays on the allowlist, but every
+address it lists is left out of marketing mail: the new-arrivals digest (by
+hand or by itself, any cadence) and the featured email. Sign-in links,
+approval / welcome notes, offer confirmations and offer replies still go.
+Missing means no hold; `/admin` shows "Mail held (AOI)" on the buyer, read-only.
+An address listed on a held account *and* an open one is not held (the usual
+hold is "not a real account: duplicate", and the duplicate lists the real
+buyer's address). Holds are sticky: an address stays held until a customers
+feed lists it on an account that is not held, so a held account dropping off
+the feed does not put it back on the digest (table `mail_holds`).
 
 Every sheet carries an **"Under $__"** filter, measured on whichever price that
 buyer can see. The margin-derived suggested offer that used to sit under each

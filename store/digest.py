@@ -36,6 +36,13 @@ How the digest goes out:
 
 Recipients are approved buyers with an email, and nobody else: not pending,
 not suspended, not the legacy AOI allowlist, not invite-link holders.
+
+**Mail hold** (AOI PR #206): an address that is on an AOI account marked lost
+("won't buy from us") or not a real account comes in on the customers feed with
+``mail_hold: true``.  Every send in this module skips it -- the digest by hand
+or by itself, and the featured email -- whatever the buyer's cadence.  Nothing
+else changes for them: they still sign in (link or otherwise), make offers, and
+get the confirmations and replies to those, which are not in this module.
 """
 from __future__ import annotations
 
@@ -210,11 +217,13 @@ def cadence_of(b: dict[str, Any]) -> str:
 
 
 def recipients(store, *, cadence: str | None = None) -> list[dict[str, Any]]:
-    """Approved buyers with an email who take mail at all; narrowed to one
-    cadence when the auto-send asks."""
+    """Approved buyers with an email who take mail at all, less anyone AOI
+    holds from marketing mail; narrowed to one cadence when the auto-send asks."""
+    held = store.mail_held_emails()
     out = []
     for b in store.list_buyers(status="approved"):
-        if not str(b.get("email") or "").strip():
+        email = str(b.get("email") or "").strip().lower()
+        if not email or email in held:
             continue
         c = cadence_of(b)
         if c == "never" or (cadence and c != cadence):
@@ -229,13 +238,20 @@ def status(ctx) -> dict[str, Any]:
     store = ctx.store
     since = cutoff(ctx.cfg.digest_days)
     by = {c: 0 for c in CADENCES}
+    held = store.mail_held_emails()
+    n_held = 0
     for b in store.list_buyers(status="approved"):
-        if str(b.get("email") or "").strip():
-            by[cadence_of(b)] += 1
+        email = str(b.get("email") or "").strip().lower()
+        if not email:
+            continue
+        if email in held:
+            n_held += 1                 # counted apart: no cadence reaches them
+            continue
+        by[cadence_of(b)] += 1
     wd = (ctx.cfg.digest_weekday or "").lower()[:3]
     return {"since": since, "days": int(ctx.cfg.digest_days or 7), "weekday": wd if wd in _WEEKDAYS else "",
             "new_count": store.count_products(new_since=since), "recipients": len(recipients(store)),
-            "by_cadence": by, "labels": CADENCE_LABELS,
+            "by_cadence": by, "labels": CADENCE_LABELS, "mail_held": n_held,
             "last": store.last_digest(KIND),
             "last_by_cadence": {c: store.last_digest(KIND, cadence=c) for c in _AUTO_CADENCES},
             "featured_count": store.count_products(featured_only=True),
