@@ -134,6 +134,11 @@ customers = sa.Table(
     # Which of the three surfaces (JJ, 2026-09-10) -- see PRICING_TIERS. An
     # older AOI sends nothing: a list means cost_plus, otherwise the offer sheet.
     sa.Column("pricing_tier", sa.String(12), nullable=False, default="offer"),
+    # AOI marked the account lost ("won't buy from us") or not a real account
+    # (AOI PR #206). It stays on the allowlist -- it signs in, offers, gets its
+    # sign-in links and replies -- but no marketing mail goes to it: no digest,
+    # no featured email. Only the boolean crosses; the reason stays in AOI.
+    sa.Column("mail_hold", sa.Boolean, nullable=False, default=False),
     sa.Column("active", sa.Boolean, nullable=False, default=True),
     sa.Column("updated_at", sa.String(32), nullable=False),
 )
@@ -159,6 +164,9 @@ customer_emails = sa.Table(
     "customer_emails", metadata,
     sa.Column("email", sa.String(200), primary_key=True),
     sa.Column("customer_id", sa.String(32), nullable=False, index=True),
+    # True when ANY account that lists this address is mail-held: the row keeps
+    # one customer id (last write wins) but the hold must not depend on which.
+    sa.Column("mail_hold", sa.Boolean, nullable=False, default=False),
 )
 
 curation = sa.Table(
@@ -391,6 +399,17 @@ DEFAULT_TIER = "offer"
 TIER_LABELS = {"offer": "Make an offer", "ev_base": "EV base price", "cost_plus": "Cost plus"}
 
 
+def feed_flag(value: Any) -> bool:
+    """A boolean off the feed, read strictly: JSON true (or 1 / "true" / "yes")
+    is True; missing, null, false and anything else is False -- so a stray
+    string "false" can never turn into a hold, nor a garbled value into one."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    return str(value or "").strip().lower() in ("true", "1", "yes")
+
+
 def clean_tier(value: Any) -> str:
     v = str(value or "").strip().lower()
     return v if v in PRICING_TIERS else DEFAULT_TIER
@@ -506,12 +525,14 @@ class Store:
                 # it was before tiers existed; neither is the offer sheet.
                 "pricing_tier": (clean_tier(it.get("pricing_tier")) if it.get("pricing_tier")
                                  else ("cost_plus" if clean_list_id(it.get("price_list_id")) else "offer")),
+                # The feed is a full snapshot: missing (an older AOI) is no hold.
+                "mail_hold": feed_flag(it.get("mail_hold")),
                 "active": True, "updated_at": now,
             })
             for e in it.get("emails") or []:
                 e = str(e).strip().lower()
                 if e:
-                    emails.append({"email": e, "customer_id": cid})
+                    emails.append({"email": e, "customer_id": cid, "mail_hold": rows[-1]["mail_hold"]})
         with self.engine.begin() as conn:
             conn.execute(sa.update(customers).values(active=False))
             _upsert(conn, customers, rows, "customer_id")
@@ -519,7 +540,8 @@ class Store:
             # last write wins if an email is listed under two accounts
             seen: dict[str, dict[str, Any]] = {}
             for e in emails:
-                seen[e["email"]] = e
+                held = e["mail_hold"] or seen.get(e["email"], {}).get("mail_hold", False)
+                seen[e["email"]] = {**e, "mail_hold": held}
             if seen:
                 conn.execute(customer_emails.insert(), list(seen.values()))
             conn.execute(feed_runs.insert().values(kind="customers", count=len(rows), as_of=as_of,
@@ -657,6 +679,13 @@ class Store:
                 .where(customer_emails.c.email == e, customers.c.active.is_(True))
             ).mappings().first()
         return _cust(row) if row else None
+
+    def mail_held_emails(self) -> set[str]:
+        """Addresses on an AOI account that is mail-held (lost / not a real
+        account). Marketing sends skip them; transactional mail does not ask."""
+        with self.engine.connect() as conn:
+            rs = conn.execute(sa.select(customer_emails.c.email).where(customer_emails.c.mail_hold.is_(True))).all()
+        return {str(r[0]).strip().lower() for r in rs}
 
     def customer(self, customer_id: str) -> dict[str, Any] | None:
         with self.engine.connect() as conn:
@@ -1448,7 +1477,9 @@ def _ensure_columns(eng: Engine) -> None:
                            "published_disc_pct": "INTEGER NOT NULL DEFAULT 0"},
               "customers": {"accounts_json": "TEXT NOT NULL DEFAULT '{}'",
                             "price_list_id": "VARCHAR(64)",
-                            "pricing_tier": "VARCHAR(12) NOT NULL DEFAULT 'offer'"},
+                            "pricing_tier": "VARCHAR(12) NOT NULL DEFAULT 'offer'",
+                            "mail_hold": "BOOLEAN NOT NULL DEFAULT FALSE"},
+              "customer_emails": {"mail_hold": "BOOLEAN NOT NULL DEFAULT FALSE"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
               "login_tokens": {"subject": "VARCHAR(200)"},
               "rounds": {"opened_at": "VARCHAR(32)"},

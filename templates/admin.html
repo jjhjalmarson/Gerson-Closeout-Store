@@ -38,7 +38,7 @@
   {% if digest.last %}Last sent {{ digest.last.sent_at[:16].replace('T', ' ') }} to {{ digest.last.recipients }} buyer{{ '' if digest.last.recipients == 1 else 's' }} ({{ digest.last.items }} items){% if digest.last.sent_by %}, by {{ digest.last.sent_by }}{% endif %}.{% else %}Never sent.{% endif %}
   Buyers get the items, the pack, what is available and the original wholesale, with a link to the sheet filtered to what is new. No closeout price, as on the sheet.</p>
 <p class="muted">Each buyer chooses how often, in the <b>Emails</b> column below:
-  <b>{{ digest.by_cadence.daily }}</b> daily · <b>{{ digest.by_cadence.weekly }}</b> weekly · <b>{{ digest.by_cadence.monthly }}</b> monthly · <b>{{ digest.by_cadence.never }}</b> none.
+  <b>{{ digest.by_cadence.daily }}</b> daily · <b>{{ digest.by_cadence.weekly }}</b> weekly · <b>{{ digest.by_cadence.monthly }}</b> monthly · <b>{{ digest.by_cadence.never }}</b> none.{% if digest.mail_held %} <b>{{ digest.mail_held }}</b> mail held by AOI (lost or not a real account), who get neither email.{% endif %}
   {% if digest.weekday %}It sends itself after the nightly feed: daily buyers any day something new lands, weekly buyers every <b>{{ digest.weekday }}</b>, monthly buyers every fourth <b>{{ digest.weekday }}</b>. Each buyer only ever sees an item once.{% else %}Set <code>DIGEST_WEEKDAY</code> (mon…sun) on the service and it sends itself on those cadences; until then it goes only when you click.{% endif %}</p>
 <div class="bar">
   <a class="btn sec" href="{{ url_for('admin.digest_preview') }}" target="_blank">Preview the email</a>
@@ -91,7 +91,8 @@
     <td><form method="post" action="{{ url_for('admin.set_cadence', buyer_id=b.id) }}" style="display:flex;gap:.3rem">
       <select name="digest_cadence" onchange="this.form.submit()" title="how often they get the new-arrivals email">
         {% for c in cadences %}<option value="{{ c }}" {% if c == (b.digest_cadence or 'weekly') %}selected{% endif %}>{{ c }}</option>{% endfor %}
-      </select><noscript><button class="sec">Set</button></noscript></form></td>
+      </select><noscript><button class="sec">Set</button></noscript></form>
+      {% if b.mail_hold %}<span class="pill" title="AOI marked this account lost or not a real account: no digest or featured email, whatever the setting. Sign-in links and offer replies still go. Change it in AOI.">Mail held (AOI)</span>{% endif %}</td>
     <td>{{ b.status }}</td><td>{{ b.offers }}</td><td class="muted">{{ (b.approved_at or '')[:10] }} {{ b.approved_by or '' }}</td>
     <td><form method="post" action="{{ url_for('admin.set_status', buyer_id=b.id) }}" style="display:inline">
       {% if b.status == 'approved' %}<button name="status" value="suspended" class="sec">Suspend</button>{% else %}<button name="status" value="approved">Reactivate</button>{% endif %}</form></td>

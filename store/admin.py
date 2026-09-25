@@ -47,7 +47,10 @@ def admin_required(fn):
 def home():
     store = _ctx().store
     counts = store.buyer_offer_counts()
-    buyers = [dict(b, offers=counts.get(f"buyer:{b['id']}", 0)) for b in store.list_buyers() if b["status"] in ("approved", "suspended")]
+    held = store.mail_held_emails()        # read-only here: AOI sets it, the feed carries it
+    buyers = [dict(b, offers=counts.get(f"buyer:{b['id']}", 0),
+                   mail_hold=str(b.get("email") or "").strip().lower() in held)
+              for b in store.list_buyers() if b["status"] in ("approved", "suspended")]
     return render_template("admin.html", admin_email=current_admin(), pending=store.list_buyers(status="pending"),
                            buyers=buyers, invites=store.list_signup_invites(), classes=list(BUYER_CLASSES),
                            cadences=list(CADENCES), price_lists=store.price_lists(),
