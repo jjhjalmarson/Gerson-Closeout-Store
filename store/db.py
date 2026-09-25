@@ -164,9 +164,21 @@ customer_emails = sa.Table(
     "customer_emails", metadata,
     sa.Column("email", sa.String(200), primary_key=True),
     sa.Column("customer_id", sa.String(32), nullable=False, index=True),
-    # True when ANY account that lists this address is mail-held: the row keeps
-    # one customer id (last write wins) but the hold must not depend on which.
-    sa.Column("mail_hold", sa.Boolean, nullable=False, default=False),
+)
+
+# Addresses AOI holds from marketing mail (mail_hold on the customers feed).
+# Kept apart from customer_emails, which is rebuilt from every snapshot, because
+# a hold is sticky: an address stays held until a feed lists it on an account
+# that is not held.  A held account dropping off the feed (removed from the AOI
+# allowlist, or its NetSuite email missing from one night's fetch) therefore
+# does not put it back on the digest.  An address listed on a held account and
+# an open one is NOT held: "not a real account -- duplicate" is the commonest
+# hold, and the duplicate lists the real buyer's address.
+mail_holds = sa.Table(
+    "mail_holds", metadata,
+    sa.Column("email", sa.String(200), primary_key=True),
+    sa.Column("customer_id", sa.String(32), nullable=False, default=""),
+    sa.Column("held_at", sa.String(32), nullable=False),
 )
 
 curation = sa.Table(
@@ -512,6 +524,7 @@ class Store:
     def ingest_customers(self, items: Iterable[dict[str, Any]], *, as_of: str | None, generated_at: str | None) -> int:
         now = now_iso()
         rows, emails = [], []
+        listed: dict[str, str | None] = {}      # email -> held customer id, or "" when an open account lists it
         for it in items:
             cid = str(it["customer_id"])
             rows.append({
@@ -532,7 +545,12 @@ class Store:
             for e in it.get("emails") or []:
                 e = str(e).strip().lower()
                 if e:
-                    emails.append({"email": e, "customer_id": cid, "mail_hold": rows[-1]["mail_hold"]})
+                    emails.append({"email": e, "customer_id": cid})
+                    # held only if every account listing the address is held
+                    if not rows[-1]["mail_hold"]:
+                        listed[e] = ""
+                    elif e not in listed:
+                        listed[e] = cid
         with self.engine.begin() as conn:
             conn.execute(sa.update(customers).values(active=False))
             _upsert(conn, customers, rows, "customer_id")
@@ -540,10 +558,18 @@ class Store:
             # last write wins if an email is listed under two accounts
             seen: dict[str, dict[str, Any]] = {}
             for e in emails:
-                held = e["mail_hold"] or seen.get(e["email"], {}).get("mail_hold", False)
-                seen[e["email"]] = {**e, "mail_hold": held}
+                seen[e["email"]] = e
             if seen:
                 conn.execute(customer_emails.insert(), list(seen.values()))
+            # Sticky holds: an address this feed lists is set (held) or lifted
+            # (open); one it does not list keeps whatever it had.
+            lift = [e for e, c in listed.items() if not c]
+            for i in range(0, len(lift), 500):
+                conn.execute(sa.delete(mail_holds).where(mail_holds.c.email.in_(lift[i:i + 500])))
+            have = {r[0] for r in conn.execute(sa.select(mail_holds.c.email)).all()}
+            new = [{"email": e, "customer_id": c, "held_at": now} for e, c in listed.items() if c and e not in have]
+            if new:
+                conn.execute(mail_holds.insert(), new)
             conn.execute(feed_runs.insert().values(kind="customers", count=len(rows), as_of=as_of,
                                                    generated_at=generated_at, received_at=now))
         return len(rows)
@@ -684,7 +710,7 @@ class Store:
         """Addresses on an AOI account that is mail-held (lost / not a real
         account). Marketing sends skip them; transactional mail does not ask."""
         with self.engine.connect() as conn:
-            rs = conn.execute(sa.select(customer_emails.c.email).where(customer_emails.c.mail_hold.is_(True))).all()
+            rs = conn.execute(sa.select(mail_holds.c.email)).all()
         return {str(r[0]).strip().lower() for r in rs}
 
     def customer(self, customer_id: str) -> dict[str, Any] | None:
@@ -1479,7 +1505,6 @@ def _ensure_columns(eng: Engine) -> None:
                             "price_list_id": "VARCHAR(64)",
                             "pricing_tier": "VARCHAR(12) NOT NULL DEFAULT 'offer'",
                             "mail_hold": "BOOLEAN NOT NULL DEFAULT FALSE"},
-              "customer_emails": {"mail_hold": "BOOLEAN NOT NULL DEFAULT FALSE"},
               "outbox": {"buyer_key": "VARCHAR(96)"},
               "login_tokens": {"subject": "VARCHAR(200)"},
               "rounds": {"opened_at": "VARCHAR(32)"},

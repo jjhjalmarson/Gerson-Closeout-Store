@@ -65,6 +65,11 @@ address it lists is left out of marketing mail: the new-arrivals digest (by
 hand or by itself, any cadence) and the featured email. Sign-in links,
 approval / welcome notes, offer confirmations and offer replies still go.
 Missing means no hold; `/admin` shows "Mail held (AOI)" on the buyer, read-only.
+An address listed on a held account *and* an open one is not held (the usual
+hold is "not a real account: duplicate", and the duplicate lists the real
+buyer's address). Holds are sticky: an address stays held until a customers
+feed lists it on an account that is not held, so a held account dropping off
+the feed does not put it back on the digest (table `mail_holds`).
 
 Every sheet carries an **"Under $__"** filter, measured on whichever price that
 buyer can see. The margin-derived suggested offer that used to sit under each

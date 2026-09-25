@@ -23,7 +23,7 @@ TODAY = date.today()
 WD = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 # 26003 is held and lists donna + held@ross.test; 27000 is not held and lists
-# buyer@shop.com, which the held account lists too.
+# buyer@shop.com, which the held account lists too (so it is not held).
 HELD_FEED = {"kind": "customers", "as_of": "2026-09-25", "count": 2, "items": [
     {**CUSTOMERS["items"][0], "emails": ["donna-n@live.com", "held@ross.test", "buyer@shop.com"], "mail_hold": True},
     {"customer_id": "27000", "company_name": "Open Co", "emails": ["buyer@shop.com", "open@ok.test"],
@@ -42,8 +42,8 @@ class FeedTest(StoreTestCase):
         self.assertEqual(self.ingest("customers", HELD_FEED).status_code, 202)
         self.assertTrue(_cust_row(self.store, "26003")["mail_hold"])
         self.assertFalse(_cust_row(self.store, "27000")["mail_hold"])              # no key = no hold
-        # an address on a held account and an open one is held, whichever row wins
-        self.assertEqual(self.store.mail_held_emails(), {"donna-n@live.com", "held@ross.test", "buyer@shop.com"})
+        # an address on a held account and an open one is not held: the open one wins
+        self.assertEqual(self.store.mail_held_emails(), {"donna-n@live.com", "held@ross.test"})
 
     def test_strict_parse(self):
         self.assertEqual([D.feed_flag(v) for v in (True, 1, "true", "YES", "1")], [True] * 5)
@@ -57,6 +57,10 @@ class FeedTest(StoreTestCase):
         self.ingest("customers", HELD_FEED)
         self.ingest("customers", CUSTOMERS)                                        # AOI cleared the flag
         self.assertFalse(_cust_row(self.store, "26003")["mail_hold"])
+        # the addresses it lists are lifted; one no feed lists any more stays held
+        self.assertEqual(self.store.mail_held_emails(), {"held@ross.test"})
+        self.ingest("customers", {**CUSTOMERS, "items": [{**CUSTOMERS["items"][0],
+                                                          "emails": ["donna-n@live.com", "HELD@ross.test "]}]})
         self.assertEqual(self.store.mail_held_emails(), set())
 
     def test_empty_feed_guard_still_refuses_and_keeps_holds(self):
@@ -225,6 +229,39 @@ class AdminListTest(StoreTestCase):
         self.assertNotIn("mail_hold", row)                                          # no control to change it
         self.assertIn("<b>1</b> mail held by AOI", home)
         self.assertIn("Send now to 1 buyer<", home)                                 # the held buyer is not counted
+
+
+class ReviewFindingsTest(StoreTestCase):
+    """Adversarial review of PR #34."""
+
+    def test_duplicate_record_hold_does_not_silence_the_real_account(self):
+        # "Not a real account: duplicate" is the commonest hold, and a duplicate
+        # NetSuite record lists the same buyer's address as the real one.  The
+        # real, open account listing the address must win.
+        feed = {**HELD_FEED, "items": [
+            {"customer_id": "30001", "company_name": "Dupe of Open Co", "emails": ["buyer@open.test"],
+             "accounts": {"gerson": "30001"}, "mail_hold": True},
+            {"customer_id": "30002", "company_name": "Open Co", "emails": ["buyer@open.test"],
+             "accounts": {"gerson": "30002"}},
+        ]}
+        self.ingest("customers", feed)
+        self.assertNotIn("buyer@open.test", self.store.mail_held_emails())
+        # and in the other order, too
+        self.ingest("customers", {**feed, "items": list(reversed(feed["items"]))})
+        self.assertNotIn("buyer@open.test", self.store.mail_held_emails())
+
+    def test_hold_survives_the_account_dropping_off_the_feed(self):
+        # A held account that leaves the feed (removed from the AOI allowlist, or
+        # its NetSuite email missing from one night's fetch) must not resume
+        # marketing: only a feed that lists the address un-held lifts it.
+        self.ingest("customers", HELD_FEED)
+        self.ingest("customers", {**CUSTOMERS, "items": [HELD_FEED["items"][1]]})
+        self.assertIn("held@ross.test", self.store.mail_held_emails())
+        self.assertIn("donna-n@live.com", self.store.mail_held_emails())
+        # listed again without the flag: lifted
+        self.ingest("customers", CUSTOMERS)
+        self.assertNotIn("donna-n@live.com", self.store.mail_held_emails())
+        self.assertIn("held@ross.test", self.store.mail_held_emails())       # still not listed anywhere
 
 
 if __name__ == "__main__":
