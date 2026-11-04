@@ -82,9 +82,7 @@ def ingest(kind: str):
                 current_app.logger.info("pruned %d cached images for SKUs gone 30+ days", pruned)
         except Exception:                                  # noqa: BLE001
             current_app.logger.exception("image prune failed")
-    if kind == "catalog" and not current_app.config.get("TESTING"):
-        from . import images
-        images.refresh_in_background(store)
+    # No image prefetch after the feed: /img/<sku> fetches on first view.
     if kind == "catalog":
         # The weekly new-arrivals digest rides the nightly feed, on the configured
         # weekday only, and never twice in a week. Off unless DIGEST_WEEKDAY is set.
