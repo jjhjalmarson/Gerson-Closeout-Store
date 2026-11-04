@@ -75,6 +75,13 @@ def ingest(kind: str):
     fn = {"catalog": store.ingest_catalog, "customers": store.ingest_customers, "curation": store.ingest_curation,
           "invites": store.ingest_invites, "prices": store.ingest_prices}[kind]
     n = fn(body["items"], as_of=body.get("as_of"), generated_at=body.get("generated_at"))
+    if kind == "catalog":
+        try:
+            pruned = store.prune_images()
+            if pruned:
+                current_app.logger.info("pruned %d cached images for SKUs gone 30+ days", pruned)
+        except Exception:                                  # noqa: BLE001
+            current_app.logger.exception("image prune failed")
     if kind == "catalog" and not current_app.config.get("TESTING"):
         from . import images
         images.refresh_in_background(store)
@@ -176,4 +183,8 @@ def events_pull():
 @bp.get("/healthz")
 def healthz():
     store = current_app.config["STORE"].store
-    return jsonify({"ok": True, "feeds": store.feed_status(), "images": store.image_stats()})
+    try:
+        storage = store.storage_stats()
+    except Exception:                                      # noqa: BLE001
+        storage = {}
+    return jsonify({"ok": True, "feeds": store.feed_status(), "images": store.image_stats(), "storage": storage})
