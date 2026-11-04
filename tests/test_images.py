@@ -136,5 +136,21 @@ class ImageRoutesTest(StoreTestCase):
         self.assertEqual(h["storage"], {})                                   # sqlite: no size readout
 
 
+class RetiredImagesTableTest(unittest.TestCase):
+    def test_old_prefetch_table_is_dropped_on_startup(self):
+        import os, tempfile
+        import sqlalchemy as sa
+        from store import db as D
+        path = os.path.join(tempfile.mkdtemp(), "s.db")
+        eng = sa.create_engine(f"sqlite:///{path}")
+        with eng.begin() as conn:
+            conn.execute(sa.text("CREATE TABLE images (sku TEXT PRIMARY KEY, data BLOB)"))
+        eng.dispose()
+        eng = D.make_engine(f"sqlite:///{path}")
+        names = sa.inspect(eng).get_table_names()
+        self.assertNotIn("images", names)
+        self.assertIn("image_cache", names)
+
+
 if __name__ == "__main__":
     unittest.main()

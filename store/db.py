@@ -343,9 +343,12 @@ rounds = sa.Table(
 )
 
 # Product images, fetched once from the feed's source URL and served from here
-# so buyers never load a NetSuite / shop URL directly.
+# so buyers never load a NetSuite / shop URL directly. Fetched on first view
+# only (2026-11-04): prefetching all ~9K heroes filled the 1 GB disk with images
+# nobody looked at. Renamed from "images" so the old prefetched table can be
+# dropped on deploy (see _drop_retired_tables) and the space handed back.
 images = sa.Table(
-    "images", metadata,
+    "image_cache", metadata,
     sa.Column("sku", sa.String(64), primary_key=True),
     sa.Column("source_url", sa.Text, nullable=False),
     sa.Column("content_type", sa.String(40)),
@@ -445,9 +448,22 @@ def make_engine(url: str) -> Engine:
     else:
         kw["pool_pre_ping"] = True
     eng = sa.create_engine(url, **kw)
+    _drop_retired_tables(eng)
     metadata.create_all(eng)
     _ensure_columns(eng)
     return eng
+
+
+# Tables a deploy should remove. DROP, not DELETE: it gives the disk back at once.
+RETIRED_TABLES = ("images",)
+
+
+def _drop_retired_tables(eng) -> None:
+    for name in RETIRED_TABLES:
+        if name in metadata.tables:          # never drop a table still in use
+            continue
+        with eng.begin() as conn:
+            conn.execute(sa.text(f"DROP TABLE IF EXISTS {name}"))
 
 
 def _upsert(conn, table: sa.Table, rows: list[dict[str, Any]], key: str) -> None:
@@ -1216,7 +1232,7 @@ class Store:
             return {}
         with self.engine.connect() as conn:
             row = conn.execute(sa.text(
-                "SELECT pg_database_size(current_database()), pg_total_relation_size('images'),"
+                "SELECT pg_database_size(current_database()), pg_total_relation_size('image_cache'),"
                 " pg_total_relation_size('events'), pg_total_relation_size('products')")).first()
         return {"db_bytes": int(row[0]), "images_bytes": int(row[1]),
                 "events_bytes": int(row[2]), "products_bytes": int(row[3])}
