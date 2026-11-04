@@ -1197,6 +1197,30 @@ class Store:
         with self.engine.connect() as conn:
             return [(r[0], r[1]) for r in conn.execute(stmt)]
 
+    def prune_images(self, grace_days: int = 30) -> int:
+        """Drop cached images nobody can see any more.
+
+        A SKU that left the feed keeps its row in ``products`` (inactive, with
+        ``updated_at`` frozen at its last feed), and its image used to stay
+        forever: by 2026-11-04 the cache held 10,626 images for 9,126 live items
+        on a 1 GB disk. A month's grace, because closeouts do come back and a
+        returning item should not have to wait for a re-fetch."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(grace_days))).isoformat(timespec="seconds")
+        live = sa.select(products.c.sku).where(sa.or_(products.c.active.is_(True), products.c.updated_at >= cutoff))
+        with self.engine.begin() as conn:
+            return int(conn.execute(sa.delete(images).where(images.c.sku.not_in(live))).rowcount or 0)
+
+    def storage_stats(self) -> dict[str, int]:
+        """Bytes on disk, Postgres only (catalog lookups, cheap enough for /healthz)."""
+        if self.engine.dialect.name != "postgresql":
+            return {}
+        with self.engine.connect() as conn:
+            row = conn.execute(sa.text(
+                "SELECT pg_database_size(current_database()), pg_total_relation_size('images'),"
+                " pg_total_relation_size('events'), pg_total_relation_size('products')")).first()
+        return {"db_bytes": int(row[0]), "images_bytes": int(row[1]),
+                "events_bytes": int(row[2]), "products_bytes": int(row[3])}
+
     def image_stats(self) -> dict[str, int]:
         with self.engine.connect() as conn:
             ok = conn.execute(sa.select(sa.func.count()).select_from(images).where(images.c.status == "ok")).scalar() or 0

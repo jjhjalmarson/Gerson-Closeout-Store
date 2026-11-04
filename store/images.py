@@ -89,6 +89,11 @@ def _resize(raw: bytes) -> tuple[bytes, str]:
     im = Image.open(io.BytesIO(raw))
     im.load()
     has_alpha = im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info)
+    if has_alpha:
+        # Most product PNGs carry an alpha channel that is opaque everywhere;
+        # keeping those as PNG made them several times the JPEG size for nothing.
+        im = im.convert("RGBA")
+        has_alpha = im.getchannel("A").getextrema()[0] < 255
     if max(im.size) > MAX_EDGE:
         im.thumbnail((MAX_EDGE, MAX_EDGE))
     out = io.BytesIO()

@@ -42,8 +42,12 @@ class ResizeAndFetchTest(unittest.TestCase):
         self.assertEqual(w, I.MAX_EDGE)
         self.assertLess(h, 900)
         data, ctype = I._resize(_png((300, 300), mode="RGBA"))
-        self.assertEqual(ctype, "image/png")
+        self.assertEqual(ctype, "image/jpeg")                                # alpha channel, but opaque
         self.assertEqual(Image.open(io.BytesIO(data)).size, (300, 300))     # small images untouched
+        im = Image.new("RGBA", (300, 300), (200, 30, 30, 0))                # really transparent
+        buf = io.BytesIO(); im.save(buf, format="PNG")
+        data, ctype = I._resize(buf.getvalue())
+        self.assertEqual(ctype, "image/png")
 
     def test_fetch_rejects_soft_404_html_and_non_200(self):
         s = FakeSession({"https://x/a": _Resp(b"<html>shell</html>", "text/html"),
@@ -108,12 +112,28 @@ class ImageRoutesTest(StoreTestCase):
             self.assertNotIn("https://img/l1.jpg", html)
             self.assertIn("/img/L1", html)
 
+    def test_prune_images_drops_only_long_gone_skus(self):
+        from store import db as D
+        for sku in ("L1", "GONE_NEW", "GONE_OLD", "ORPHAN"):
+            self.store.put_image(sku, f"https://img/{sku}", b"x", "image/jpeg", status="ok")
+        with self.store.engine.begin() as conn:
+            conn.execute(D.products.insert(), [
+                {"sku": s, "description": s, "active": False, "updated_at": t, "image_url": ""}
+                for s, t in (("GONE_NEW", D.now_iso()), ("GONE_OLD", "2026-01-01T00:00:00+00:00"))])
+        self.assertEqual(self.store.prune_images(), 2)                       # GONE_OLD + ORPHAN
+        self.assertIsNotNone(self.store.image("L1"))                         # live
+        self.assertIsNotNone(self.store.image("GONE_NEW"))                   # inside the grace month
+        self.assertIsNone(self.store.image("GONE_OLD"))
+        self.assertIsNone(self.store.image("ORPHAN"))
+
     def test_refresh_endpoint_keyed_and_healthz_stats(self):
         self.assertEqual(self.client.post("/images/refresh").status_code, 404)
         r = self.client.post("/images/refresh?limit=5", headers={"X-API-Key": KEY})
         self.assertEqual(r.status_code, 200)
         self.assertIn("attempted", r.get_json())
-        self.assertIn("images", self.client.get("/healthz").get_json())
+        h = self.client.get("/healthz").get_json()
+        self.assertIn("images", h)
+        self.assertEqual(h["storage"], {})                                   # sqlite: no size readout
 
 
 if __name__ == "__main__":
